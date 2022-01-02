@@ -28,6 +28,9 @@ pub enum AuditStatus {
     Submitted(Date),
     // 5 - 注册生效 or 终止注册
     Registered(RegisterResult),
+    // other
+    // Todo
+    Unsupported,
 }
 
 /// the information about company which want to IPO in KCB
@@ -96,7 +99,7 @@ impl TryFrom<String> for CompanyInfo {
                     (Some(3), _) => AuditStatus::Discussed(date.date()),
                     (Some(2), _) => AuditStatus::Queried(date.date()),
                     (Some(1), _) => AuditStatus::Accepted(date.date()),
-                    (_, _) => return Err(anyhow!("Invalid status")),
+                    (_, _) => AuditStatus::Unsupported,
                 }
             },
             apply_date: {
@@ -164,27 +167,20 @@ impl TryFrom<String> for InfoDisclosure {
                 .context("invalid input")?
         );
         let json_body: Value = serde_json::from_str(&json_str)?;
-        println!("{:#?}", json_body);
-        let mut ret = InfoDisclosure::default();
+        let mut infos = InfoDisclosure::default();
         let file_arr = json_body["result"]
             .as_array()
             .context("extract file array failed")?;
         let download_base = Url::parse("http://static.sse.com.cn/stock")?;
-        file_arr.iter().for_each(|x| {
+        let ret = file_arr.iter().try_for_each(|x| {
             let file = UploadFile {
                 filename: {
-                    if let Some(name) = x["fileTitle"].as_str() {
-                        name.to_owned()
-                    } else {
-                        return;
-                    }
+                    let name = x["fileTitle"].as_str().context("get filename failed")?;
+                    name.to_owned()
                 },
                 url: {
-                    if let Ok(download_url) = download_base.join(x["filePath"].as_str().unwrap()) {
-                        download_url
-                    } else {
-                        return;
-                    }
+                    let download_url = x["filePath"].as_str().context("get file url failed")?;
+                    download_base.join(download_url)?
                 },
             };
             let file_type = x["fileType"].as_u64();
@@ -192,102 +188,157 @@ impl TryFrom<String> for InfoDisclosure {
             match (file_type, file_ver) {
                 // 招股说明书, 申报稿
                 (Some(30), Some(1)) => {
-                    ret.prospectuses[0] = Some(file);
+                    infos.prospectuses[0] = Some(file);
+                    Ok(())
                 }
                 // 招股说明书, 上会稿
                 (Some(30), Some(2)) => {
-                    ret.prospectuses[1] = Some(file);
+                    infos.prospectuses[1] = Some(file);
+                    Ok(())
                 }
                 // 招股说明书, 注册稿
                 (Some(30), Some(3)) => {
-                    ret.prospectuses[2] = Some(file);
+                    infos.prospectuses[2] = Some(file);
+                    Ok(())
                 }
                 // 发行保荐书, 申报稿
                 (Some(36), Some(1)) => {
-                    ret.publish_sponsor[0] = Some(file);
+                    infos.publish_sponsor[0] = Some(file);
+                    Ok(())
                 }
                 // 发行保荐书, 上会稿
                 (Some(36), Some(2)) => {
-                    ret.publish_sponsor[1] = Some(file);
+                    infos.publish_sponsor[1] = Some(file);
+                    Ok(())
                 }
                 // 发行保荐书, 注册稿
                 (Some(36), Some(3)) => {
-                    ret.publish_sponsor[2] = Some(file);
+                    infos.publish_sponsor[2] = Some(file);
+                    Ok(())
                 }
                 // 上市保荐书, 申报稿
                 (Some(37), Some(1)) => {
-                    ret.list_sponsor[0] = Some(file);
+                    infos.list_sponsor[0] = Some(file);
+                    Ok(())
                 }
                 // 上市保荐书, 上会稿
                 (Some(37), Some(2)) => {
-                    ret.list_sponsor[1] = Some(file);
+                    infos.list_sponsor[1] = Some(file);
+                    Ok(())
                 }
                 // 上市保荐书, 注册稿
                 (Some(37), Some(3)) => {
-                    ret.list_sponsor[2] = Some(file);
+                    infos.list_sponsor[2] = Some(file);
+                    Ok(())
                 }
                 // 审计报告, 申报稿
                 (Some(32), Some(1)) => {
-                    ret.audio_report[0] = Some(file);
+                    infos.audio_report[0] = Some(file);
+                    Ok(())
                 }
                 // 审计报告, 上会稿
                 (Some(32), Some(2)) => {
-                    ret.audio_report[1] = Some(file);
+                    infos.audio_report[1] = Some(file);
+                    Ok(())
                 }
                 // 审计报告, 注册稿
                 (Some(32), Some(3)) => {
-                    ret.audio_report[2] = Some(file);
+                    infos.audio_report[2] = Some(file);
+                    Ok(())
                 }
                 // 法律意见书, 申报稿
                 (Some(33), Some(1)) => {
-                    ret.legal_opinion[0] = Some(file);
+                    infos.legal_opinion[0] = Some(file);
+                    Ok(())
                 }
                 // 法律意见书, 上会稿
                 (Some(33), Some(2)) => {
-                    ret.legal_opinion[1] = Some(file);
+                    infos.legal_opinion[1] = Some(file);
+                    Ok(())
                 }
                 // 法律意见书, 注册稿
                 (Some(33), Some(3)) => {
-                    ret.legal_opinion[2] = Some(file);
+                    infos.legal_opinion[2] = Some(file);
+                    Ok(())
                 }
                 // 其他, 申报稿
                 (Some(34), Some(1)) => {
-                    ret.others[0] = Some(file);
+                    infos.others[0] = Some(file);
+                    Ok(())
                 }
                 // 其他, 上会稿
                 (Some(34), Some(2)) => {
-                    ret.others[1] = Some(file);
+                    infos.others[1] = Some(file);
+                    Ok(())
                 }
                 // 其他, 注册稿
                 (Some(34), Some(3)) => {
-                    ret.others[2] = Some(file);
+                    infos.others[2] = Some(file);
+                    Ok(())
                 }
                 // 问询和回复
                 (Some(5) | Some(6), _) => {
-                    ret.query_and_reply.push(Some(file));
+                    infos.query_and_reply.push(Some(file));
+                    Ok(())
                 }
                 // 注册结果通知和终止审核通知
                 (Some(35) | Some(38), _) => {
-                    ret.register_result_or_audit_terminated.push(Some(file));
+                    infos.register_result_or_audit_terminated.push(Some(file));
+                    Ok(())
                 }
                 // other
-                (_, _) => {}
+                (_, _) => Err(anyhow!("unknown file type")),
             }
         });
-        Ok(ret)
+        if ret.is_ok() {
+            Ok(infos)
+        } else {
+            Err(anyhow!("Error in parsing file path for InfoDisclosure"))
+        }
     }
 }
 
 /// 上市委会议公告与结果
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct MeetingAnnounce {
     announcements: Vec<Option<UploadFile>>,
 }
 
 impl TryFrom<String> for MeetingAnnounce {
-    type Error = ();
+    type Error = anyhow::Error;
     fn try_from(resp: String) -> Result<Self, Self::Error> {
-        unimplemented!();
+        #[allow(clippy::useless_format)]
+        let json_str = format!(
+            r#"{}"#,
+            resp.split_terminator(&['(', ')'][..])
+                .next_back()
+                .context("invalid input")?
+        );
+        let json_body: Value = serde_json::from_str(&json_str)?;
+        let mut announce = MeetingAnnounce::default();
+        let file_arr = json_body["result"]
+            .as_array()
+            .context("extract file array failed")?;
+        let download_base = Url::parse("http://static.sse.com.cn/stock")?;
+        let ret: Result<(), anyhow::Error> = file_arr.iter().try_for_each(|x| {
+            let file = UploadFile {
+                filename: {
+                    let name = x["fileTitle"].as_str().context("get filename failed")?;
+                    name.to_owned()
+                },
+                url: {
+                    let download_url = x["filePath"].as_str().context("get file url failed")?;
+                    download_base.join(download_url)?
+                },
+            };
+            announce.announcements.push(Some(file));
+            Ok(())
+        });
+        if ret.is_ok() {
+            Ok(announce)
+        } else {
+            Err(anyhow!("Error in parsing path for MeetingAnnounce"))
+        }
     }
 }
 
@@ -331,19 +382,50 @@ impl SseCrawler {
     }
 
     async fn query_company_overview(&self, name: &str) -> Result<CompanyInfo, Error> {
-        unimplemented!();
+        let url = format!("http://query.sse.com.cn/statusAction.do?jsonCallBack=jsonpCallback42305&isPagination=true&sqlId=SH_XM_LB&pageHelp.pageSize=20&offerType=&commitiResult=&registeResult=&province=&csrcCode=&currStatus=&order=&keyword={}&auditApplyDateBegin=&auditApplyDateEnd=&_=1640867539069", name);
+        let resp = self.client.get(url).send().await?;
+
+        let body = resp.text().await?;
+        Ok(CompanyInfo::try_from(body)?)
     }
 
     async fn query_company_disclosure(&self, id: u32) -> Result<InfoDisclosure, Error> {
-        unimplemented!();
+        let url = format!("http://query.sse.com.cn/commonSoaQuery.do?jsonCallBack=jsonpCallback99435173&isPagination=false&sqlId=GP_GPZCZ_SHXXPL&stockAuditNum={}&_=1641094982593", id);
+        let resp = self.client.get(url).send().await?;
+
+        let body = resp.text().await?;
+        Ok(InfoDisclosure::try_from(body)?)
     }
 
     async fn query_company_announce(&self, id: u32) -> Result<MeetingAnnounce, Error> {
-        unimplemented!();
+        let url = format!("http://query.sse.com.cn/commonSoaQuery.do?jsonCallBack=jsonpCallback42495292&isPagination=false&sqlId=GP_GPZCZ_SSWHYGGJG&fileType=1,2,3,4&stockAuditNum={}&_=1641114627446", id);
+        let resp = self.client.get(url).send().await?;
+
+        let body = resp.text().await?;
+        Ok(MeetingAnnounce::try_from(body)?)
     }
 
     async fn process_company(&mut self, name: &str) {
-        unimplemented!();
+        let mut audit_id: u32 = 0;
+        let company_info = self.query_company_overview(name).await;
+        if company_info.is_ok() {
+            audit_id = company_info.as_ref().unwrap().stock_audit_number;
+            let disclosure = self.query_company_disclosure(audit_id).await;
+            let announce = self.query_company_announce(audit_id).await;
+            if disclosure.is_ok() && announce.is_ok() {
+                self.companies.push(ItemDetail {
+                    overview: company_info.unwrap(),
+                    disclosure: disclosure.unwrap(),
+                    announce: announce.unwrap(),
+                })
+            }
+        } else {
+            self.failed_logs.push(name.to_owned())
+        }
+    }
+
+    async fn download_company_files(&self){
+        unimplemented!()
     }
 }
 
@@ -440,5 +522,46 @@ mod tests {
         );
         let disclosure = InfoDisclosure::try_from(raw_data);
         println!("{:#?}", disclosure);
+    }
+
+    #[tokio::test]
+    async fn test_query_company_info() {
+        let sse = SseCrawler::new();
+        let company = sse
+            .query_company_overview("大汉软件股份有限公司")
+            .await
+            .unwrap();
+        println!("{:#?}", company)
+    }
+
+    #[tokio::test]
+    async fn test_query_company_disclosure() {
+        let sse = SseCrawler::new();
+        let info = sse.query_company_disclosure(759).await.unwrap();
+        println!("{:#?}", info)
+    }
+
+    #[tokio::test]
+    async fn test_query_company_announce() {
+        let sse = SseCrawler::new();
+        let announce = sse.query_company_announce(759).await.unwrap();
+        println!("{:#?}", announce)
+    }
+
+    #[tokio::test]
+    async fn test_process_company() {
+        let mut sse = SseCrawler::new();
+        sse.process_company("大汉软件股份有限公司").await;
+        println!("{:#?}", sse);
+    }
+
+    #[tokio::test]
+    async fn test_process_more_companies() {
+        let mut sse = SseCrawler::new();
+        let companies = ["上海赛伦生物技术股份有限公司", "大汉软件股份有限公司"];
+        for i in 0..companies.len() {
+            sse.process_company(companies[i]).await;
+        }
+        println!("{:#?}", sse);
     }
 }
