@@ -1,8 +1,20 @@
 use anyhow::{anyhow, Context, Error};
 use reqwest::{header, Client, ClientBuilder, Url};
 use serde_json::{json, Value};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use time::macros::date;
 use time::{format_description, Date, PrimitiveDateTime};
+use tokio::sync::Mutex;
+
+static DECLARE_SUBFOLDER: &str = "申报稿";
+static REGISTER_SUBFOLDER: &str = "注册稿";
+static MEETING_SUBFOLDER: &str = "上会稿";
+static SPONSOR_SUBFOLDER: &str = "问询与回复/发行人与保荐机构";
+static ACCOUNTANT_SUBFOLDER: &str = "问询与回复/会计师";
+static LAWYER_SUBFOLDER: &str = "问询与回复/律师";
+static RESULT_SUBFOLDER: &str = "结果";
 
 /// IPO result
 #[repr(u8)]
@@ -122,6 +134,19 @@ impl TryFrom<String> for CompanyInfo {
 pub struct UploadFile {
     filename: String,
     url: Url,
+    path:PathBuf,
+}
+
+#[derive(Debug)]
+pub enum QueryReply {
+    // 发行人,保荐机构
+    Sponsor(UploadFile),
+    // 会计师
+    Accountant(UploadFile),
+    // 律师
+    Lawyer(UploadFile),
+    // other
+    Other(UploadFile),
 }
 
 /// 信息披露 & 问询与回复 & 注册结果文件
@@ -149,7 +174,7 @@ pub struct InfoDisclosure {
     /* #### 问询与回复
      * ----
      */
-    query_and_reply: Vec<Option<UploadFile>>,
+    query_and_reply: Vec<Option<QueryReply>>,
     /* #### 注册结果文件 and 终止审核通知
      * ----
      */
@@ -173,7 +198,7 @@ impl TryFrom<String> for InfoDisclosure {
             .context("extract file array failed")?;
         let download_base = Url::parse("http://static.sse.com.cn/stock")?;
         let ret = file_arr.iter().try_for_each(|x| {
-            let file = UploadFile {
+            let mut file = UploadFile {
                 filename: {
                     let name = x["fileTitle"].as_str().context("get filename failed")?;
                     name.to_owned()
@@ -182,107 +207,196 @@ impl TryFrom<String> for InfoDisclosure {
                     let download_url = x["filePath"].as_str().context("get file url failed")?;
                     download_base.join(download_url)?
                 },
+                path: {
+                    let mut path = PathBuf::new();
+                    path.push("Download");
+                    path.push(x["companyFullName"].as_str().context("get company name failed")?);
+                    path
+                }
             };
             let file_type = x["fileType"].as_u64();
             let file_ver = x["fileVersion"].as_u64();
             match (file_type, file_ver) {
                 // 招股说明书, 申报稿
                 (Some(30), Some(1)) => {
+                    file.path.push(DECLARE_SUBFOLDER);
+                    file.path.push(&file.filename);
+                    file.path.set_extension("pdf");
                     infos.prospectuses[0] = Some(file);
                     Ok(())
                 }
                 // 招股说明书, 上会稿
                 (Some(30), Some(2)) => {
+                    file.path.push(MEETING_SUBFOLDER);
+                    file.path.push(&file.filename);
+                    file.path.set_extension("pdf");
                     infos.prospectuses[1] = Some(file);
                     Ok(())
                 }
                 // 招股说明书, 注册稿
                 (Some(30), Some(3)) => {
+                    file.path.push(REGISTER_SUBFOLDER);
+                    file.path.push(&file.filename);
+                    file.path.set_extension("pdf");
                     infos.prospectuses[2] = Some(file);
                     Ok(())
                 }
                 // 发行保荐书, 申报稿
                 (Some(36), Some(1)) => {
+                    file.path.push(DECLARE_SUBFOLDER);
+                    file.path.push(&file.filename);
+                    file.path.set_extension("pdf");
                     infos.publish_sponsor[0] = Some(file);
                     Ok(())
                 }
                 // 发行保荐书, 上会稿
                 (Some(36), Some(2)) => {
+                    file.path.push(MEETING_SUBFOLDER);
+                    file.path.push(&file.filename);
+                    file.path.set_extension("pdf");
                     infos.publish_sponsor[1] = Some(file);
                     Ok(())
                 }
                 // 发行保荐书, 注册稿
                 (Some(36), Some(3)) => {
+                    file.path.push(REGISTER_SUBFOLDER);
+                    file.path.push(&file.filename);
+                    file.path.set_extension("pdf");
                     infos.publish_sponsor[2] = Some(file);
                     Ok(())
                 }
                 // 上市保荐书, 申报稿
                 (Some(37), Some(1)) => {
+                    file.path.push(DECLARE_SUBFOLDER);
+                    file.path.push(&file.filename);
+                    file.path.set_extension("pdf");
                     infos.list_sponsor[0] = Some(file);
                     Ok(())
                 }
                 // 上市保荐书, 上会稿
                 (Some(37), Some(2)) => {
+                    file.path.push(MEETING_SUBFOLDER);
+                    file.path.push(&file.filename);
+                    file.path.set_extension("pdf");
                     infos.list_sponsor[1] = Some(file);
                     Ok(())
                 }
                 // 上市保荐书, 注册稿
                 (Some(37), Some(3)) => {
+                    file.path.push(REGISTER_SUBFOLDER);
+                    file.path.push(&file.filename);
+                    file.path.set_extension("pdf");
                     infos.list_sponsor[2] = Some(file);
                     Ok(())
                 }
                 // 审计报告, 申报稿
                 (Some(32), Some(1)) => {
+                    file.path.push(DECLARE_SUBFOLDER);
+                    file.path.push(&file.filename);
+                    file.path.set_extension("pdf");
                     infos.audio_report[0] = Some(file);
                     Ok(())
                 }
                 // 审计报告, 上会稿
                 (Some(32), Some(2)) => {
+                    file.path.push(MEETING_SUBFOLDER);
+                    file.path.push(&file.filename);
+                    file.path.set_extension("pdf");
                     infos.audio_report[1] = Some(file);
                     Ok(())
                 }
                 // 审计报告, 注册稿
                 (Some(32), Some(3)) => {
+                    file.path.push(REGISTER_SUBFOLDER);
+                    file.path.push(&file.filename);
+                    file.path.set_extension("pdf");
                     infos.audio_report[2] = Some(file);
                     Ok(())
                 }
                 // 法律意见书, 申报稿
                 (Some(33), Some(1)) => {
+                    file.path.push(DECLARE_SUBFOLDER);
+                    file.path.push(&file.filename);
+                    file.path.set_extension("pdf");
                     infos.legal_opinion[0] = Some(file);
                     Ok(())
                 }
                 // 法律意见书, 上会稿
                 (Some(33), Some(2)) => {
+                    file.path.push(MEETING_SUBFOLDER);
+                    file.path.push(&file.filename);
+                    file.path.set_extension("pdf");
                     infos.legal_opinion[1] = Some(file);
                     Ok(())
                 }
                 // 法律意见书, 注册稿
                 (Some(33), Some(3)) => {
+                    file.path.push(REGISTER_SUBFOLDER);
+                    file.path.push(&file.filename);
+                    file.path.set_extension("pdf");
                     infos.legal_opinion[2] = Some(file);
                     Ok(())
                 }
                 // 其他, 申报稿
                 (Some(34), Some(1)) => {
+                    file.path.push(DECLARE_SUBFOLDER);
+                    file.path.push(&file.filename);
+                    file.path.set_extension("pdf");
                     infos.others[0] = Some(file);
                     Ok(())
                 }
                 // 其他, 上会稿
                 (Some(34), Some(2)) => {
+                    file.path.push(MEETING_SUBFOLDER);
+                    file.path.push(&file.filename);
+                    file.path.set_extension("pdf");
                     infos.others[1] = Some(file);
                     Ok(())
                 }
                 // 其他, 注册稿
                 (Some(34), Some(3)) => {
+                    file.path.push(REGISTER_SUBFOLDER);
+                    file.path.push(&file.filename);
+                    file.path.set_extension("pdf");
                     infos.others[2] = Some(file);
                     Ok(())
                 }
                 // 问询和回复
                 (Some(5) | Some(6), _) => {
-                    infos.query_and_reply.push(Some(file));
+                    // 发行人及保荐机构
+                    if file.filename.starts_with("8-1") {
+                        file.path.push(SPONSOR_SUBFOLDER);
+                        file.path.push(&file.filename);
+                        file.path.set_extension("pdf");
+                        infos.query_and_reply.push(Some(QueryReply::Sponsor(file)));
+                    } else if file.filename.starts_with("8-2") {
+                        // 会计师
+                        file.path.push(ACCOUNTANT_SUBFOLDER);
+                        file.path.push(&file.filename);
+                        file.path.set_extension("pdf");
+                        infos
+                            .query_and_reply
+                            .push(Some(QueryReply::Accountant(file)));
+                    } else if file.filename.starts_with("8-3") {
+                        // 律师
+                        file.path.push(LAWYER_SUBFOLDER);
+                        file.path.push(&file.filename);
+                        file.path.set_extension("pdf");
+                        infos.query_and_reply.push(Some(QueryReply::Lawyer(file)));
+                    } else{
+                        file.path.push("问询与回复");
+                        file.path.push(&file.filename);
+                        file.path.set_extension("pdf");
+                        infos.query_and_reply.push(Some(QueryReply::Other(file)));
+
+                    }
                     Ok(())
                 }
                 // 注册结果通知和终止审核通知
                 (Some(35) | Some(38), _) => {
+                    file.path.push(RESULT_SUBFOLDER);
+                    file.path.push(&file.filename);
+                    file.path.set_extension("pdf");
                     infos.register_result_or_audit_terminated.push(Some(file));
                     Ok(())
                 }
@@ -330,6 +444,16 @@ impl TryFrom<String> for MeetingAnnounce {
                     let download_url = x["filePath"].as_str().context("get file url failed")?;
                     download_base.join(download_url)?
                 },
+                path:{
+                    let company_name = x["stockAudit"][0]["companyFullName"].as_str().context("get company name failed")?;
+                    let mut path = PathBuf::new();
+                    path.push("Download");
+                    path.push(company_name);
+                    path.push(RESULT_SUBFOLDER);
+                    path.push(x["fileTitle"].as_str().unwrap());
+                    path.set_extension("pdf");
+                    path
+                }
             };
             announce.announcements.push(Some(file));
             Ok(())
@@ -405,7 +529,7 @@ impl SseCrawler {
         Ok(MeetingAnnounce::try_from(body)?)
     }
 
-    async fn process_company(&mut self, name: &str) {
+    pub async fn process_company(&mut self, name: &str) {
         let mut audit_id: u32 = 0;
         let company_info = self.query_company_overview(name).await;
         if company_info.is_ok() {
@@ -424,8 +548,33 @@ impl SseCrawler {
         }
     }
 
-    async fn download_company_files(&self){
-        unimplemented!()
+    pub async fn download_company_files(&self, company: &ItemDetail) {
+        let base_folder = &company.overview.stock_audit_name;
+        let declare_folder: PathBuf = ["Download", base_folder, DECLARE_SUBFOLDER].iter().collect();
+        let register_folder: PathBuf = ["Download",base_folder, REGISTER_SUBFOLDER].iter().collect();
+        let meeting_folder: PathBuf = ["Download",base_folder, MEETING_SUBFOLDER].iter().collect();
+        let sponsor_folder: PathBuf = ["Download",base_folder, SPONSOR_SUBFOLDER].iter().collect();
+        let accountant_folder: PathBuf = ["Download",base_folder, ACCOUNTANT_SUBFOLDER].iter().collect();
+        let lawyer_folder: PathBuf = ["Download",base_folder, LAWYER_SUBFOLDER].iter().collect();
+        let result_folder: PathBuf = ["Download",base_folder, RESULT_SUBFOLDER].iter().collect();
+
+        // create subfolders to save pdf files
+        std::fs::create_dir_all(declare_folder)
+            .unwrap_or_else(|why| println!("! {:?}", why.kind()));
+        std::fs::create_dir_all(register_folder)
+            .unwrap_or_else(|why| println!("! {:?}", why.kind()));
+        std::fs::create_dir_all(meeting_folder)
+            .unwrap_or_else(|why| println!("! {:?}", why.kind()));
+        std::fs::create_dir_all(sponsor_folder)
+            .unwrap_or_else(|why| println!("! {:?}", why.kind()));
+        std::fs::create_dir_all(accountant_folder)
+            .unwrap_or_else(|why| println!("! {:?}", why.kind()));
+        std::fs::create_dir_all(lawyer_folder)
+            .unwrap_or_else(|why| println!("! {:?}", why.kind()));
+        std::fs::create_dir_all(result_folder)
+            .unwrap_or_else(|why| println!("! {:?}", why.kind()));
+
+
     }
 }
 
@@ -557,11 +706,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_more_companies() {
-        let mut sse = SseCrawler::new();
-        let companies = ["上海赛伦生物技术股份有限公司", "大汉软件股份有限公司"];
-        for i in 0..companies.len() {
-            sse.process_company(companies[i]).await;
-        }
+        let mut sse = Arc::new(Mutex::new(SseCrawler::new()));
+        // let companies = ["上海赛伦生物技术股份有限公司", "大汉软件股份有限公司"];
+        // for i in 0..companies.len() {
+        //     sse.process_company(companies[i]).await;
+        // }
         println!("{:#?}", sse);
+    }
+
+    #[tokio::test]
+    async fn test_create_subfolder() {
+        let mut sse = SseCrawler::new();
+        sse.process_company("大汉软件股份有限公司").await;
+        sse.download_company_files(&sse.companies[0]).await;
+        println!("{:#?}", sse);
+
     }
 }
