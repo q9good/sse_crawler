@@ -2,10 +2,13 @@ use anyhow::{anyhow, Context, Error};
 use reqwest::{header, Client, ClientBuilder, Url};
 use serde_json::{json, Value};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use time::macros::date;
 use time::{format_description, Date, PrimitiveDateTime};
+use tokio::fs::File;
+use tokio::io::copy;
 use tokio::sync::Mutex;
 
 static DECLARE_SUBFOLDER: &str = "申报稿";
@@ -15,6 +18,16 @@ static SPONSOR_SUBFOLDER: &str = "问询与回复/发行人与保荐机构";
 static ACCOUNTANT_SUBFOLDER: &str = "问询与回复/会计师";
 static LAWYER_SUBFOLDER: &str = "问询与回复/律师";
 static RESULT_SUBFOLDER: &str = "结果";
+
+static SUBFOLDERS: [&str; 7] = [
+    DECLARE_SUBFOLDER,
+    REGISTER_SUBFOLDER,
+    MEETING_SUBFOLDER,
+    SPONSOR_SUBFOLDER,
+    ACCOUNTANT_SUBFOLDER,
+    LAWYER_SUBFOLDER,
+    RESULT_SUBFOLDER,
+];
 
 /// IPO result
 #[repr(u8)]
@@ -134,7 +147,7 @@ impl TryFrom<String> for CompanyInfo {
 pub struct UploadFile {
     filename: String,
     url: Url,
-    path:PathBuf,
+    path: PathBuf,
 }
 
 #[derive(Debug)]
@@ -166,7 +179,7 @@ pub struct InfoDisclosure {
     // 上市保荐书
     list_sponsor: [Option<UploadFile>; 3],
     // 审计报告
-    audio_report: [Option<UploadFile>; 3],
+    audit_report: [Option<UploadFile>; 3],
     // 法律意见书
     legal_opinion: [Option<UploadFile>; 3],
     // 其他
@@ -210,9 +223,13 @@ impl TryFrom<String> for InfoDisclosure {
                 path: {
                     let mut path = PathBuf::new();
                     path.push("Download");
-                    path.push(x["companyFullName"].as_str().context("get company name failed")?);
+                    path.push(
+                        x["companyFullName"]
+                            .as_str()
+                            .context("get company name failed")?,
+                    );
                     path
-                }
+                },
             };
             let file_type = x["fileType"].as_u64();
             let file_ver = x["fileVersion"].as_u64();
@@ -294,7 +311,7 @@ impl TryFrom<String> for InfoDisclosure {
                     file.path.push(DECLARE_SUBFOLDER);
                     file.path.push(&file.filename);
                     file.path.set_extension("pdf");
-                    infos.audio_report[0] = Some(file);
+                    infos.audit_report[0] = Some(file);
                     Ok(())
                 }
                 // 审计报告, 上会稿
@@ -302,7 +319,7 @@ impl TryFrom<String> for InfoDisclosure {
                     file.path.push(MEETING_SUBFOLDER);
                     file.path.push(&file.filename);
                     file.path.set_extension("pdf");
-                    infos.audio_report[1] = Some(file);
+                    infos.audit_report[1] = Some(file);
                     Ok(())
                 }
                 // 审计报告, 注册稿
@@ -310,7 +327,7 @@ impl TryFrom<String> for InfoDisclosure {
                     file.path.push(REGISTER_SUBFOLDER);
                     file.path.push(&file.filename);
                     file.path.set_extension("pdf");
-                    infos.audio_report[2] = Some(file);
+                    infos.audit_report[2] = Some(file);
                     Ok(())
                 }
                 // 法律意见书, 申报稿
@@ -383,12 +400,11 @@ impl TryFrom<String> for InfoDisclosure {
                         file.path.push(&file.filename);
                         file.path.set_extension("pdf");
                         infos.query_and_reply.push(Some(QueryReply::Lawyer(file)));
-                    } else{
+                    } else {
                         file.path.push("问询与回复");
                         file.path.push(&file.filename);
                         file.path.set_extension("pdf");
                         infos.query_and_reply.push(Some(QueryReply::Other(file)));
-
                     }
                     Ok(())
                 }
@@ -444,8 +460,10 @@ impl TryFrom<String> for MeetingAnnounce {
                     let download_url = x["filePath"].as_str().context("get file url failed")?;
                     download_base.join(download_url)?
                 },
-                path:{
-                    let company_name = x["stockAudit"][0]["companyFullName"].as_str().context("get company name failed")?;
+                path: {
+                    let company_name = x["stockAudit"][0]["companyFullName"]
+                        .as_str()
+                        .context("get company name failed")?;
                     let mut path = PathBuf::new();
                     path.push("Download");
                     path.push(company_name);
@@ -453,7 +471,7 @@ impl TryFrom<String> for MeetingAnnounce {
                     path.push(x["fileTitle"].as_str().unwrap());
                     path.set_extension("pdf");
                     path
-                }
+                },
             };
             announce.announcements.push(Some(file));
             Ok(())
@@ -548,33 +566,87 @@ impl SseCrawler {
         }
     }
 
-    pub async fn download_company_files(&self, company: &ItemDetail) {
+    pub async fn download_company_files(&self, company: &ItemDetail) -> anyhow::Result<()> {
         let base_folder = &company.overview.stock_audit_name;
-        let declare_folder: PathBuf = ["Download", base_folder, DECLARE_SUBFOLDER].iter().collect();
-        let register_folder: PathBuf = ["Download",base_folder, REGISTER_SUBFOLDER].iter().collect();
-        let meeting_folder: PathBuf = ["Download",base_folder, MEETING_SUBFOLDER].iter().collect();
-        let sponsor_folder: PathBuf = ["Download",base_folder, SPONSOR_SUBFOLDER].iter().collect();
-        let accountant_folder: PathBuf = ["Download",base_folder, ACCOUNTANT_SUBFOLDER].iter().collect();
-        let lawyer_folder: PathBuf = ["Download",base_folder, LAWYER_SUBFOLDER].iter().collect();
-        let result_folder: PathBuf = ["Download",base_folder, RESULT_SUBFOLDER].iter().collect();
 
-        // create subfolders to save pdf files
-        std::fs::create_dir_all(declare_folder)
-            .unwrap_or_else(|why| println!("! {:?}", why.kind()));
-        std::fs::create_dir_all(register_folder)
-            .unwrap_or_else(|why| println!("! {:?}", why.kind()));
-        std::fs::create_dir_all(meeting_folder)
-            .unwrap_or_else(|why| println!("! {:?}", why.kind()));
-        std::fs::create_dir_all(sponsor_folder)
-            .unwrap_or_else(|why| println!("! {:?}", why.kind()));
-        std::fs::create_dir_all(accountant_folder)
-            .unwrap_or_else(|why| println!("! {:?}", why.kind()));
-        std::fs::create_dir_all(lawyer_folder)
-            .unwrap_or_else(|why| println!("! {:?}", why.kind()));
-        std::fs::create_dir_all(result_folder)
-            .unwrap_or_else(|why| println!("! {:?}", why.kind()));
+        // create SUBFOLDERS to save pdf files
+        SUBFOLDERS.map(|folder| {
+            let sub_folder: PathBuf = ["Download", base_folder, folder]
+                .iter()
+                .collect::<PathBuf>();
+            std::fs::create_dir_all(sub_folder)
+                .unwrap_or_else(|why| println!("! {:?}", why.kind()));
+        });
 
-
+        let mut download_tasks = Vec::<(&Url, &PathBuf)>::new();
+        company.disclosure.prospectuses.iter().for_each(|x| {
+            if x.is_some() {
+                let y = x.as_ref().unwrap();
+                download_tasks.push((&y.url, &y.path));
+            }
+        });
+        company.disclosure.publish_sponsor.iter().for_each(|x| {
+            if x.is_some() {
+                let y = x.as_ref().unwrap();
+                download_tasks.push((&y.url, &y.path));
+            }
+        });
+        company.disclosure.list_sponsor.iter().for_each(|x| {
+            if x.is_some() {
+                let y = x.as_ref().unwrap();
+                download_tasks.push((&y.url, &y.path));
+            }
+        });
+        company.disclosure.audit_report.iter().for_each(|x| {
+            if x.is_some() {
+                let y = x.as_ref().unwrap();
+                download_tasks.push((&y.url, &y.path));
+            }
+        });
+        company.disclosure.legal_opinion.iter().for_each(|x| {
+            if x.is_some() {
+                let y = x.as_ref().unwrap();
+                download_tasks.push((&y.url, &y.path));
+            }
+        });
+        company.disclosure.others.iter().for_each(|x| {
+            if x.is_some() {
+                let y = x.as_ref().unwrap();
+                download_tasks.push((&y.url, &y.path));
+            }
+        });
+        company.disclosure.query_and_reply.iter().for_each(|x| {
+            let y = x.as_ref().unwrap();
+            match y {
+                QueryReply::Sponsor(z) => download_tasks.push((&z.url, &z.path)),
+                QueryReply::Accountant(z) => download_tasks.push((&z.url, &z.path)),
+                QueryReply::Lawyer(z) => download_tasks.push((&z.url, &z.path)),
+                QueryReply::Other(z) => download_tasks.push((&z.url, &z.path)),
+            }
+        });
+        company
+            .disclosure
+            .register_result_or_audit_terminated
+            .iter()
+            .for_each(|x| {
+                let y = x.as_ref().unwrap();
+                download_tasks.push((&y.url, &y.path));
+            });
+        company.announce.announcements.iter().for_each(|x| {
+            let y = x.as_ref().unwrap();
+            download_tasks.push((&y.url, &y.path));
+        });
+        println!("{:#?}", download_tasks);
+        for (url, path) in download_tasks {
+            let url_copy = url.clone().into_string();
+            // download_tasks.iter().try_for_each(|(&url, &path)| {
+            let resp = self.client.get(url_copy).send().await?;
+            let mut content = resp.bytes().await?;
+            let mut file = std::fs::File::create(path)?;
+            file.write_all(&*content)?;
+            // std::io::copy(&mut content, &mut file);
+        }
+        Ok(())
     }
 }
 
@@ -719,7 +791,6 @@ mod tests {
         let mut sse = SseCrawler::new();
         sse.process_company("大汉软件股份有限公司").await;
         sse.download_company_files(&sse.companies[0]).await;
-        println!("{:#?}", sse);
-
+        // println!("{:#?}", sse);
     }
 }
