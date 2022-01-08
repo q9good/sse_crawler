@@ -1,15 +1,15 @@
 use anyhow::{anyhow, Context, Error};
 use reqwest::{header, Client, ClientBuilder, Url};
 use serde_json::{json, Value};
-use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use time::macros::date;
 use time::{format_description, Date, PrimitiveDateTime};
 use tokio::fs::File;
-use tokio::io::copy;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
+use tokio::time::{sleep, Duration};
 
 static DECLARE_SUBFOLDER: &str = "申报稿";
 static REGISTER_SUBFOLDER: &str = "注册稿";
@@ -209,7 +209,7 @@ impl TryFrom<String> for InfoDisclosure {
         let file_arr = json_body["result"]
             .as_array()
             .context("extract file array failed")?;
-        let download_base = Url::parse("http://static.sse.com.cn/stock")?;
+        let mut download_base = Url::parse("http://static.sse.com.cn/stock/")?;
         let ret = file_arr.iter().try_for_each(|x| {
             let mut file = UploadFile {
                 filename: {
@@ -218,7 +218,8 @@ impl TryFrom<String> for InfoDisclosure {
                 },
                 url: {
                     let download_url = x["filePath"].as_str().context("get file url failed")?;
-                    download_base.join(download_url)?
+                    download_base.set_path(&*("stock".to_owned() + download_url));
+                    download_base.to_owned()
                 },
                 path: {
                     let mut path = PathBuf::new();
@@ -449,7 +450,7 @@ impl TryFrom<String> for MeetingAnnounce {
         let file_arr = json_body["result"]
             .as_array()
             .context("extract file array failed")?;
-        let download_base = Url::parse("http://static.sse.com.cn/stock")?;
+        let mut download_base = Url::parse("http://static.sse.com.cn/stock/")?;
         let ret: Result<(), anyhow::Error> = file_arr.iter().try_for_each(|x| {
             let file = UploadFile {
                 filename: {
@@ -458,7 +459,9 @@ impl TryFrom<String> for MeetingAnnounce {
                 },
                 url: {
                     let download_url = x["filePath"].as_str().context("get file url failed")?;
-                    download_base.join(download_url)?
+                    download_base.set_path(&*("stock".to_owned() + download_url));
+                    download_base.to_owned()
+                    // download_base.join(download_url)?
                 },
                 path: {
                     let company_name = x["stockAudit"][0]["companyFullName"]
@@ -636,15 +639,13 @@ impl SseCrawler {
             let y = x.as_ref().unwrap();
             download_tasks.push((&y.url, &y.path));
         });
-        println!("{:#?}", download_tasks);
+        // println!("{:#?}", download_tasks);
         for (url, path) in download_tasks {
-            let url_copy = url.clone().into_string();
-            // download_tasks.iter().try_for_each(|(&url, &path)| {
-            let resp = self.client.get(url_copy).send().await?;
-            let mut content = resp.bytes().await?;
-            let mut file = std::fs::File::create(path)?;
-            file.write_all(&*content)?;
-            // std::io::copy(&mut content, &mut file);
+            // println!("{:#?}", url.clone().as_str());
+            let resp = self.client.get(url.clone()).send().await?;
+            let content = resp.bytes().await?;
+            let mut file = File::create(path).await?;
+            file.write_all(&content).await?;
         }
         Ok(())
     }
@@ -654,6 +655,7 @@ impl SseCrawler {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::time::Instant;
 
     #[tokio::test]
     async fn test_store_cookie_automatically() {
@@ -778,12 +780,37 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_more_companies() {
-        let mut sse = Arc::new(Mutex::new(SseCrawler::new()));
-        // let companies = ["上海赛伦生物技术股份有限公司", "大汉软件股份有限公司"];
-        // for i in 0..companies.len() {
-        //     sse.process_company(companies[i]).await;
-        // }
+        // let mut sse = Arc::new(Mutex::new(SseCrawler::new()));
+        let now = Instant::now();
+        let mut sse = SseCrawler::new();
+        let companies = ["上海赛伦生物技术股份有限公司", "大汉软件股份有限公司"];
+        for i in 0..companies.len() {
+            sse.process_company(companies[i]).await;
+        }
         println!("{:#?}", sse);
+        println!("总耗时：{} ms", now.elapsed().as_millis());
+    }
+
+    #[tokio::test]
+    async fn test_process_more_companies_true_async() {
+        let now = Instant::now();
+        let mut sse = Arc::new(Mutex::new(SseCrawler::new()));
+        let companies = ["上海赛伦生物技术股份有限公司", "大汉软件股份有限公司"];
+        let mut handles = Vec::with_capacity(companies.len());
+        for i in 0..companies.len() {
+            let sse_copy = sse.clone();
+            handles.push(tokio::spawn(async move {
+                let mut copy = sse_copy.lock().await;
+                copy.process_company(companies[i]).await;
+            }));
+        }
+        for handle in handles{
+            handle.await;
+        }
+
+        // sleep(Duration::from_secs(20)).await;
+        println!("{:#?}", sse);
+        println!("总耗时：{} ms", now.elapsed().as_millis());
     }
 
     #[tokio::test]
