@@ -495,18 +495,10 @@ pub struct ItemDetail {
     announce: MeetingAnnounce,
 }
 
-/// 爬虫入口
-#[derive(Debug)]
-pub struct SseCrawler {
-    // reqwest client
-    client: Client,
-    // 所有公司信息
-    companies: Vec<ItemDetail>,
-    // 出错的公司名字，需人工处理
-    failed_logs: Vec<String>,
-}
+#[derive(Debug,Clone)]
+pub struct ReqClient(Client);
 
-impl SseCrawler {
+impl ReqClient {
     pub fn new() -> Self {
         let mut headers = header::HeaderMap::new();
         headers.insert("User-Agent", header::HeaderValue::from_static("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.93 Safari/537.36"));
@@ -519,136 +511,167 @@ impl SseCrawler {
             .default_headers(headers)
             .build()
             .unwrap();
+        ReqClient(client)
+    }
+}
+
+/// 爬虫入口
+#[derive(Debug)]
+pub struct SseQuery {
+    // reqwest client
+    // client: Client,
+    // 所有公司信息
+    companies: Vec<ItemDetail>,
+    // 出错的公司名字，需人工处理
+    failed_logs: Vec<String>,
+}
+
+impl SseQuery {
+    pub fn new() -> Self {
         Self {
-            client,
             companies: Vec::new(),
             failed_logs: Vec::new(),
         }
     }
 
-    async fn query_company_overview(&self, name: &str) -> Result<CompanyInfo, Error> {
-        let url = format!("http://query.sse.com.cn/statusAction.do?jsonCallBack=jsonpCallback42305&isPagination=true&sqlId=SH_XM_LB&pageHelp.pageSize=20&offerType=&commitiResult=&registeResult=&province=&csrcCode=&currStatus=&order=&keyword={}&auditApplyDateBegin=&auditApplyDateEnd=&_=1640867539069", name);
-        let resp = self.client.get(url).send().await?;
-
-        let body = resp.text().await?;
-        Ok(CompanyInfo::try_from(body)?)
-    }
-
-    async fn query_company_disclosure(&self, id: u32) -> Result<InfoDisclosure, Error> {
-        let url = format!("http://query.sse.com.cn/commonSoaQuery.do?jsonCallBack=jsonpCallback99435173&isPagination=false&sqlId=GP_GPZCZ_SHXXPL&stockAuditNum={}&_=1641094982593", id);
-        let resp = self.client.get(url).send().await?;
-
-        let body = resp.text().await?;
-        Ok(InfoDisclosure::try_from(body)?)
-    }
-
-    async fn query_company_announce(&self, id: u32) -> Result<MeetingAnnounce, Error> {
-        let url = format!("http://query.sse.com.cn/commonSoaQuery.do?jsonCallBack=jsonpCallback42495292&isPagination=false&sqlId=GP_GPZCZ_SSWHYGGJG&fileType=1,2,3,4&stockAuditNum={}&_=1641114627446", id);
-        let resp = self.client.get(url).send().await?;
-
-        let body = resp.text().await?;
-        Ok(MeetingAnnounce::try_from(body)?)
-    }
-
-    pub async fn process_company(&mut self, name: &str) {
-        let mut audit_id: u32 = 0;
-        let company_info = self.query_company_overview(name).await;
-        if company_info.is_ok() {
-            audit_id = company_info.as_ref().unwrap().stock_audit_number;
-            let disclosure = self.query_company_disclosure(audit_id).await;
-            let announce = self.query_company_announce(audit_id).await;
-            if disclosure.is_ok() && announce.is_ok() {
-                self.companies.push(ItemDetail {
-                    overview: company_info.unwrap(),
-                    disclosure: disclosure.unwrap(),
-                    announce: announce.unwrap(),
-                })
-            }
-        } else {
-            self.failed_logs.push(name.to_owned())
+    pub fn add(&mut self, company: std::result::Result<ItemDetail, String>) {
+        match company {
+            Ok(info) => self.companies.push(info),
+            Err(name) => self.failed_logs.push(name),
         }
     }
+}
 
-    pub async fn download_company_files(&self, company: &ItemDetail) -> anyhow::Result<()> {
-        let base_folder = &company.overview.stock_audit_name;
+async fn query_company_overview(client: &mut ReqClient, name: &str) -> Result<CompanyInfo, Error> {
+    let url = format!("http://query.sse.com.cn/statusAction.do?jsonCallBack=jsonpCallback42305&isPagination=true&sqlId=SH_XM_LB&pageHelp.pageSize=20&offerType=&commitiResult=&registeResult=&province=&csrcCode=&currStatus=&order=&keyword={}&auditApplyDateBegin=&auditApplyDateEnd=&_=1640867539069", name);
+    let resp = client.0.get(url).send().await?;
 
-        // create SUBFOLDERS to save pdf files
-        SUBFOLDERS.map(|folder| {
-            let sub_folder: PathBuf = ["Download", base_folder, folder]
-                .iter()
-                .collect::<PathBuf>();
-            std::fs::create_dir_all(sub_folder)
-                .unwrap_or_else(|why| println!("! {:?}", why.kind()));
-        });
+    let body = resp.text().await?;
+    Ok(CompanyInfo::try_from(body)?)
+}
 
-        let mut download_tasks = Vec::<(&Url, &PathBuf)>::new();
-        company.disclosure.prospectuses.iter().for_each(|x| {
-            if x.is_some() {
-                let y = x.as_ref().unwrap();
-                download_tasks.push((&y.url, &y.path));
-            }
-        });
-        company.disclosure.publish_sponsor.iter().for_each(|x| {
-            if x.is_some() {
-                let y = x.as_ref().unwrap();
-                download_tasks.push((&y.url, &y.path));
-            }
-        });
-        company.disclosure.list_sponsor.iter().for_each(|x| {
-            if x.is_some() {
-                let y = x.as_ref().unwrap();
-                download_tasks.push((&y.url, &y.path));
-            }
-        });
-        company.disclosure.audit_report.iter().for_each(|x| {
-            if x.is_some() {
-                let y = x.as_ref().unwrap();
-                download_tasks.push((&y.url, &y.path));
-            }
-        });
-        company.disclosure.legal_opinion.iter().for_each(|x| {
-            if x.is_some() {
-                let y = x.as_ref().unwrap();
-                download_tasks.push((&y.url, &y.path));
-            }
-        });
-        company.disclosure.others.iter().for_each(|x| {
-            if x.is_some() {
-                let y = x.as_ref().unwrap();
-                download_tasks.push((&y.url, &y.path));
-            }
-        });
-        company.disclosure.query_and_reply.iter().for_each(|x| {
-            let y = x.as_ref().unwrap();
-            match y {
-                QueryReply::Sponsor(z) => download_tasks.push((&z.url, &z.path)),
-                QueryReply::Accountant(z) => download_tasks.push((&z.url, &z.path)),
-                QueryReply::Lawyer(z) => download_tasks.push((&z.url, &z.path)),
-                QueryReply::Other(z) => download_tasks.push((&z.url, &z.path)),
-            }
-        });
-        company
-            .disclosure
-            .register_result_or_audit_terminated
+async fn query_company_disclosure(
+    client: &mut ReqClient,
+    id: u32,
+) -> Result<InfoDisclosure, Error> {
+    let url = format!("http://query.sse.com.cn/commonSoaQuery.do?jsonCallBack=jsonpCallback99435173&isPagination=false&sqlId=GP_GPZCZ_SHXXPL&stockAuditNum={}&_=1641094982593", id);
+    let resp = client.0.get(url).send().await?;
+
+    let body = resp.text().await?;
+    Ok(InfoDisclosure::try_from(body)?)
+}
+
+async fn query_company_announce(client: &mut ReqClient, id: u32) -> Result<MeetingAnnounce, Error> {
+    let url = format!("http://query.sse.com.cn/commonSoaQuery.do?jsonCallBack=jsonpCallback42495292&isPagination=false&sqlId=GP_GPZCZ_SSWHYGGJG&fileType=1,2,3,4&stockAuditNum={}&_=1641114627446", id);
+    let resp = client.0.get(url).send().await?;
+
+    let body = resp.text().await?;
+    Ok(MeetingAnnounce::try_from(body)?)
+}
+
+pub async fn process_company(name: &str) -> std::result::Result<ItemDetail, String> {
+    let mut audit_id: u32 = 0;
+    let mut client = ReqClient::new();
+    let company_info = query_company_overview(&mut client, name).await;
+    if company_info.is_ok() {
+        audit_id = company_info.as_ref().unwrap().stock_audit_number;
+        let disclosure = query_company_disclosure(&mut client, audit_id).await;
+        let announce = query_company_announce(&mut client, audit_id).await;
+        if disclosure.is_ok() && announce.is_ok() {
+            Ok(ItemDetail {
+                overview: company_info.unwrap(),
+                disclosure: disclosure.unwrap(),
+                announce: announce.unwrap(),
+            })
+        } else {
+            Err(name.to_owned())
+        }
+    } else {
+        Err(name.to_owned())
+    }
+}
+
+pub async fn download_company_files(
+    company: &ItemDetail,
+) -> anyhow::Result<()> {
+    let base_folder = &company.overview.stock_audit_name;
+    let client = ReqClient::new();
+
+    // create SUBFOLDERS to save pdf files
+    SUBFOLDERS.map(|folder| {
+        let sub_folder: PathBuf = ["Download", base_folder, folder]
             .iter()
-            .for_each(|x| {
-                let y = x.as_ref().unwrap();
-                download_tasks.push((&y.url, &y.path));
-            });
-        company.announce.announcements.iter().for_each(|x| {
+            .collect::<PathBuf>();
+        std::fs::create_dir_all(sub_folder).unwrap_or_else(|why| println!("! {:?}", why.kind()));
+    });
+
+    let mut download_tasks = Vec::<(&Url, &PathBuf)>::new();
+    company.disclosure.prospectuses.iter().for_each(|x| {
+        if x.is_some() {
+            let y = x.as_ref().unwrap();
+            download_tasks.push((&y.url, &y.path));
+        }
+    });
+    company.disclosure.publish_sponsor.iter().for_each(|x| {
+        if x.is_some() {
+            let y = x.as_ref().unwrap();
+            download_tasks.push((&y.url, &y.path));
+        }
+    });
+    company.disclosure.list_sponsor.iter().for_each(|x| {
+        if x.is_some() {
+            let y = x.as_ref().unwrap();
+            download_tasks.push((&y.url, &y.path));
+        }
+    });
+    company.disclosure.audit_report.iter().for_each(|x| {
+        if x.is_some() {
+            let y = x.as_ref().unwrap();
+            download_tasks.push((&y.url, &y.path));
+        }
+    });
+    company.disclosure.legal_opinion.iter().for_each(|x| {
+        if x.is_some() {
+            let y = x.as_ref().unwrap();
+            download_tasks.push((&y.url, &y.path));
+        }
+    });
+    company.disclosure.others.iter().for_each(|x| {
+        if x.is_some() {
+            let y = x.as_ref().unwrap();
+            download_tasks.push((&y.url, &y.path));
+        }
+    });
+    company.disclosure.query_and_reply.iter().for_each(|x| {
+        let y = x.as_ref().unwrap();
+        match y {
+            QueryReply::Sponsor(z) => download_tasks.push((&z.url, &z.path)),
+            QueryReply::Accountant(z) => download_tasks.push((&z.url, &z.path)),
+            QueryReply::Lawyer(z) => download_tasks.push((&z.url, &z.path)),
+            QueryReply::Other(z) => download_tasks.push((&z.url, &z.path)),
+        }
+    });
+    company
+        .disclosure
+        .register_result_or_audit_terminated
+        .iter()
+        .for_each(|x| {
             let y = x.as_ref().unwrap();
             download_tasks.push((&y.url, &y.path));
         });
-        // println!("{:#?}", download_tasks);
-        for (url, path) in download_tasks {
-            // println!("{:#?}", url.clone().as_str());
-            let resp = self.client.get(url.clone()).send().await?;
-            let content = resp.bytes().await?;
-            let mut file = File::create(path).await?;
-            file.write_all(&content).await?;
-        }
-        Ok(())
+    company.announce.announcements.iter().for_each(|x| {
+        let y = x.as_ref().unwrap();
+        download_tasks.push((&y.url, &y.path));
+    });
+    // println!("{:#?}", download_tasks);
+    for (url, path) in download_tasks {
+        // println!("{:#?}", url.clone().as_str());
+        let resp = client.0.get(url.clone()).send().await?;
+        let content = resp.bytes().await?;
+        let mut file = File::create(path).await?;
+        file.write_all(&content).await?;
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -749,9 +772,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_query_company_info() {
-        let sse = SseCrawler::new();
-        let company = sse
-            .query_company_overview("大汉软件股份有限公司")
+        let mut client = ReqClient::new();
+        let company =
+            query_company_overview(&mut client,"大汉软件股份有限公司")
             .await
             .unwrap();
         println!("{:#?}", company)
@@ -759,22 +782,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_query_company_disclosure() {
-        let sse = SseCrawler::new();
-        let info = sse.query_company_disclosure(759).await.unwrap();
+        let mut client = ReqClient::new();
+        let info = query_company_disclosure(&mut client, 759).await.unwrap();
         println!("{:#?}", info)
     }
 
     #[tokio::test]
     async fn test_query_company_announce() {
-        let sse = SseCrawler::new();
-        let announce = sse.query_company_announce(759).await.unwrap();
+        let mut client = ReqClient::new();
+        let announce = query_company_announce(&mut client, 759).await.unwrap();
         println!("{:#?}", announce)
     }
 
     #[tokio::test]
     async fn test_process_company() {
-        let mut sse = SseCrawler::new();
-        sse.process_company("大汉软件股份有限公司").await;
+        let sse = process_company("大汉软件股份有限公司").await;
         println!("{:#?}", sse);
     }
 
@@ -782,10 +804,13 @@ mod tests {
     async fn test_process_more_companies() {
         // let mut sse = Arc::new(Mutex::new(SseCrawler::new()));
         let now = Instant::now();
-        let mut sse = SseCrawler::new();
-        let companies = ["上海赛伦生物技术股份有限公司", "大汉软件股份有限公司"];
+        let mut client = ReqClient::new();
+        let mut sse = SseQuery::new();
+        let companies = ["上海赛伦生物技术股份有限公司", "大汉软件股份有限公司","浙江海正生物材料股份有限公司","江苏集萃药康生物科技股份有限公司"];
         for i in 0..companies.len() {
-            sse.process_company(companies[i]).await;
+            let info = process_company(companies[i]).await;
+            download_company_files(&info.as_ref().unwrap()).await;
+            sse.add(info);
         }
         println!("{:#?}", sse);
         println!("总耗时：{} ms", now.elapsed().as_millis());
@@ -794,17 +819,19 @@ mod tests {
     #[tokio::test]
     async fn test_process_more_companies_true_async() {
         let now = Instant::now();
-        let mut sse = Arc::new(Mutex::new(SseCrawler::new()));
-        let companies = ["上海赛伦生物技术股份有限公司", "大汉软件股份有限公司"];
+        let mut sse = Arc::new(Mutex::new(SseQuery::new()));
+        let companies = ["上海赛伦生物技术股份有限公司", "大汉软件股份有限公司","浙江海正生物材料股份有限公司","江苏集萃药康生物科技股份有限公司"];
         let mut handles = Vec::with_capacity(companies.len());
         for i in 0..companies.len() {
             let sse_copy = sse.clone();
             handles.push(tokio::spawn(async move {
+                let ret = process_company(companies[i]).await;
+                download_company_files(&ret.as_ref().unwrap()).await;
                 let mut copy = sse_copy.lock().await;
-                copy.process_company(companies[i]).await;
+                copy.add(ret);
             }));
         }
-        for handle in handles{
+        for handle in handles {
             handle.await;
         }
 
@@ -815,9 +842,39 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_subfolder() {
-        let mut sse = SseCrawler::new();
-        sse.process_company("大汉软件股份有限公司").await;
-        sse.download_company_files(&sse.companies[0]).await;
+        let mut sse = SseQuery::new();
+        let mut client = ReqClient::new();
+        let item = process_company("大汉软件股份有限公司").await;
+        sse.add(item);
+        download_company_files( &sse.companies[0]).await;
         // println!("{:#?}", sse);
+    }
+
+    #[tokio::test]
+    async fn test_control_concurrency_num(){
+        let now = Instant::now();
+        let mut sse = Arc::new(Mutex::new(SseQuery::new()));
+        let companies = ["上海赛伦生物技术股份有限公司", "大汉软件股份有限公司","浙江海正生物材料股份有限公司","江苏集萃药康生物科技股份有限公司"];
+        let idx:Vec<usize> = (0..companies.len()).collect();
+        for chunk in idx.chunks(2) {
+            let mut handles = Vec::with_capacity(2);
+            for &elem in chunk.iter() {
+                let sse_copy = sse.clone();
+                handles.push(tokio::spawn(async move {
+                    let ret = process_company(companies[elem]).await;
+                    // download_company_files(&ret.as_ref().unwrap()).await;
+                    let mut copy = sse_copy.lock().await;
+                    copy.add(ret);
+                }));
+            }
+            for handle in handles {
+                handle.await;
+            }
+            println!("耗时：{} ms", now.elapsed().as_millis());
+        }
+
+        // sleep(Duration::from_secs(20)).await;
+        // println!("{:#?}", sse);
+        println!("总耗时：{} ms", now.elapsed().as_millis());
     }
 }
