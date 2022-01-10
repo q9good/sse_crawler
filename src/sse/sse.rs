@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Error};
-use reqwest::{header, Client, ClientBuilder, Url};
-use serde_json::{json, Value};
+use reqwest::{header, Client, Url};
+use serde_json::Value;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -55,7 +55,8 @@ pub enum AuditStatus {
     Registered(RegisterResult),
     // other
     // Todo
-    Unsupported,
+    Unsupported(u64, u64),
+    Unknown,
 }
 
 /// the information about company which want to IPO in KCB
@@ -124,7 +125,8 @@ impl TryFrom<String> for CompanyInfo {
                     (Some(3), _) => AuditStatus::Discussed(date.date()),
                     (Some(2), _) => AuditStatus::Queried(date.date()),
                     (Some(1), _) => AuditStatus::Accepted(date.date()),
-                    (_, _) => AuditStatus::Unsupported,
+                    (Some(s), Some(r)) => AuditStatus::Unsupported(s, r),
+                    (_, _) => AuditStatus::Unknown,
                 }
             },
             apply_date: {
@@ -197,13 +199,10 @@ pub struct InfoDisclosure {
 impl TryFrom<String> for InfoDisclosure {
     type Error = anyhow::Error;
     fn try_from(resp: String) -> Result<Self, Self::Error> {
+        let pure_content: Vec<_> = resp.split_inclusive(&['(', ')'][..]).collect();
         #[allow(clippy::useless_format)]
-        let json_str = format!(
-            r#"{}"#,
-            resp.split_terminator(&['(', ')'][..])
-                .next_back()
-                .context("invalid input")?
-        );
+        let mut json_str = format!(r#"{}"#, pure_content[1..].join(""));
+        json_str.truncate(json_str.len() - 1);
         let json_body: Value = serde_json::from_str(&json_str)?;
         let mut infos = InfoDisclosure::default();
         let file_arr = json_body["result"]
@@ -495,7 +494,7 @@ pub struct ItemDetail {
     announce: MeetingAnnounce,
 }
 
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 pub struct ReqClient(Client);
 
 impl ReqClient {
@@ -521,9 +520,9 @@ pub struct SseQuery {
     // reqwest client
     // client: Client,
     // 所有公司信息
-    companies: Vec<ItemDetail>,
+    pub companies: Vec<ItemDetail>,
     // 出错的公司名字，需人工处理
-    failed_logs: Vec<String>,
+    pub failed_logs: Vec<String>,
 }
 
 impl SseQuery {
@@ -569,20 +568,32 @@ async fn query_company_announce(client: &mut ReqClient, id: u32) -> Result<Meeti
     Ok(MeetingAnnounce::try_from(body)?)
 }
 
-pub async fn process_company(name: &str) -> std::result::Result<ItemDetail, String> {
+pub async fn process_company(
+    client: &mut ReqClient,
+    name: &str,
+) -> std::result::Result<ItemDetail, String> {
     let mut audit_id: u32 = 0;
-    let mut client = ReqClient::new();
-    let company_info = query_company_overview(&mut client, name).await;
+    let company_info = query_company_overview(client, name).await;
     if company_info.is_ok() {
         audit_id = company_info.as_ref().unwrap().stock_audit_number;
-        let disclosure = query_company_disclosure(&mut client, audit_id).await;
-        let announce = query_company_announce(&mut client, audit_id).await;
+        let disclosure = query_company_disclosure(client, audit_id).await;
+        let announce = query_company_announce(client, audit_id).await;
         if disclosure.is_ok() && announce.is_ok() {
-            Ok(ItemDetail {
+            let item = ItemDetail {
                 overview: company_info.unwrap(),
                 disclosure: disclosure.unwrap(),
                 announce: announce.unwrap(),
-            })
+            };
+            #[cfg(not(test))]
+            {
+                let ret = download_company_files(client, &item).await;
+                match ret {
+                    Ok(_) => Ok(item),
+                    Err(_) => Err(name.to_owned()),
+                }
+            }
+            #[cfg(test)]
+            Ok(item)
         } else {
             Err(name.to_owned())
         }
@@ -592,10 +603,11 @@ pub async fn process_company(name: &str) -> std::result::Result<ItemDetail, Stri
 }
 
 pub async fn download_company_files(
+    client: &mut ReqClient,
     company: &ItemDetail,
 ) -> anyhow::Result<()> {
     let base_folder = &company.overview.stock_audit_name;
-    let client = ReqClient::new();
+    // let client = ReqClient::new();
 
     // create SUBFOLDERS to save pdf files
     SUBFOLDERS.map(|folder| {
@@ -666,10 +678,12 @@ pub async fn download_company_files(
     // println!("{:#?}", download_tasks);
     for (url, path) in download_tasks {
         // println!("{:#?}", url.clone().as_str());
-        let resp = client.0.get(url.clone()).send().await?;
-        let content = resp.bytes().await?;
-        let mut file = File::create(path).await?;
-        file.write_all(&content).await?;
+        if !path.exists() {
+            let resp = client.0.get(url.clone()).send().await?;
+            let content = resp.bytes().await?;
+            let mut file = File::create(path).await?;
+            file.write_all(&content).await?;
+        }
     }
     Ok(())
 }
@@ -764,7 +778,7 @@ mod tests {
     #[test]
     fn test_info_disclosure_try_from_json() {
         let raw_data = String::from(
-            r#"jsonpCallback36967625({"actionErrors":[],"actionMessages":[],"fieldErrors":{},"isPagination":"false","jsonCallBack":"jsonpCallback36967625","locale":"zh_CN","pageHelp":{"beginPage":1,"cacheSize":1,"data":[{"fileUpdateTime":"20211231173000","filePath":"\/information\/c\/202112\/61212b6e7f1d41758ec796c635dca875.pdf","publishDate":"2021-12-31","fileLastVersion":1,"stockAuditNum":"942","auditItemId":"39ea19626a1c11ec9f2608f1ea8a847f","filename":"61212b6e7f1d41758ec796c635dca875.pdf","companyFullName":"大汉软件股份有限公司","fileSize":309224,"StockType":1,"fileTitle":"关于终止对大汉软件股份有限公司首次公开发行股票并在科创板上市审核的决定","auditStatus":8,"fileVersion":4,"fileType":38,"MarketType":1,"fileId":"223439","OPERATION_SEQ":"9239c490b4d887502a2c4204d6f2c1a9"},{"fileUpdateTime":"20211230170001","filePath":"\/information\/c\/202112\/0b7a118a34d94416b003df304ec365ad.pdf","publishDate":"2021-12-30","fileLastVersion":1,"stockAuditNum":"942","auditItemId":"3bd89c5c3be741dc9c5b7bd317e13393","filename":"0b7a118a34d94416b003df304ec365ad.pdf","companyFullName":"大汉软件股份有限公司","fileSize":1939743,"StockType":1,"fileTitle":"8-1-2 发行人及保荐机构关于第二轮审核问询函的回复","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"83950911","OPERATION_SEQ":"69a4517cf2253e13fc2d8a3e4db5a5af"},{"fileUpdateTime":"20211230170001","filePath":"\/information\/c\/202112\/2c78f1add94544fb985e5d04fced3a0c.pdf","publishDate":"2021-12-30","fileLastVersion":1,"stockAuditNum":"942","auditItemId":"2bc9db5a71cd414dabf497a2c73689ee","filename":"2c78f1add94544fb985e5d04fced3a0c.pdf","companyFullName":"大汉软件股份有限公司","fileSize":943527,"StockType":1,"fileTitle":"8-2-2 申报会计师关于大汉软件股份有限公司首次公开发行股票并在科创板上市申请文件的审核第二轮问询函回复的专项说明","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"83950910","OPERATION_SEQ":"69a4517cf2253e13fc2d8a3e4db5a5af"},{"fileUpdateTime":"20211230170001","filePath":"\/information\/c\/202112\/299ccaf24da44dde99b47e85079cd886.pdf","publishDate":"2021-12-30","fileLastVersion":1,"stockAuditNum":"942","auditItemId":"51608979379d45688e864cfe57203b34","filename":"299ccaf24da44dde99b47e85079cd886.pdf","companyFullName":"大汉软件股份有限公司","fileSize":881602,"StockType":1,"fileTitle":"8-3 补充法律意见书（二）","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"83950909","OPERATION_SEQ":"69a4517cf2253e13fc2d8a3e4db5a5af"},{"fileUpdateTime":"20211224183000","filePath":"\/information\/c\/202112\/545b1ae7d78a47f894ee1a7058a76a52.pdf","publishDate":"2021-12-24","fileLastVersion":1,"stockAuditNum":"942","auditItemId":"7bf0a56a66e2490182ddcc9d55ddb6c9","filename":"545b1ae7d78a47f894ee1a7058a76a52.pdf","companyFullName":"大汉软件股份有限公司","fileSize":3174990,"StockType":1,"fileTitle":"8-1-1 发行人及保荐机构关于第一轮审核问询函的回复（2021年半年报财务数据更新版）","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"83900160","OPERATION_SEQ":"7b77b93262e7704ea174e30c28485d00"},{"fileUpdateTime":"20211224183000","filePath":"\/information\/c\/202112\/e0d096f9e6a547dbb13e857a659db3d2.pdf","publishDate":"2021-12-24","fileLastVersion":1,"stockAuditNum":"942","auditItemId":"d58f6c72947a4300bd3b0b7f63d411e3","filename":"e0d096f9e6a547dbb13e857a659db3d2.pdf","companyFullName":"大汉软件股份有限公司","fileSize":1855841,"StockType":1,"fileTitle":"8-2-1 申报会计师关于大汉软件股份有限公司首次公开发行股票并在科创板上市申请文件的审核问询函回复的专项说明（2021年半年报财务数据更新版）","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"83900159","OPERATION_SEQ":"7b77b93262e7704ea174e30c28485d00"},{"fileUpdateTime":"20211224183000","filePath":"\/information\/c\/202112\/7387c9dfea284f769fb2c40c0fece3b9.pdf","publishDate":"2021-12-24","fileLastVersion":1,"stockAuditNum":"942","auditItemId":"72cc681064a411ec9f2608f1ea8a847f","filename":"7387c9dfea284f769fb2c40c0fece3b9.pdf","companyFullName":"大汉软件股份有限公司","fileSize":877386,"StockType":1,"fileTitle":"3-3-1 补充法律意见书（二）","auditStatus":2,"fileVersion":1,"fileType":33,"MarketType":1,"fileId":"221379","OPERATION_SEQ":"7b77b93262e7704ea174e30c28485d00"},{"fileUpdateTime":"20210914170500","filePath":"\/information\/c\/202109\/2c4614c50a294572936dae91c8dbee68.pdf","publishDate":"2021-09-14","fileLastVersion":1,"stockAuditNum":"942","auditItemId":"224291a1b9334d46bf8ed1039cd35b72","filename":"2c4614c50a294572936dae91c8dbee68.pdf","companyFullName":"大汉软件股份有限公司","fileSize":5391111,"StockType":1,"fileTitle":"8-1 发行人及保荐机构关于大汉软件股份有限公司首次公开发行股票并在科创板上市申请文件的审核问询函的回复","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"82999614","OPERATION_SEQ":"250d0dd20ea2a2708595504196ff4a38"},{"fileUpdateTime":"20210914170500","filePath":"\/information\/c\/202109\/1915217e59d84bcd913c37a512591ff3.pdf","publishDate":"2021-09-14","fileLastVersion":1,"stockAuditNum":"942","auditItemId":"b02679d1f25d4734aeaa244e0b70f5e5","filename":"1915217e59d84bcd913c37a512591ff3.pdf","companyFullName":"大汉软件股份有限公司","fileSize":698723,"StockType":1,"fileTitle":"8-3 发行人律师出具的补充法律意见书（一）","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"82999613","OPERATION_SEQ":"250d0dd20ea2a2708595504196ff4a38"},{"fileUpdateTime":"20210914170500","filePath":"\/information\/c\/202109\/dd03d18d08944585b55fd92a50c1f401.pdf","publishDate":"2021-09-14","fileLastVersion":1,"stockAuditNum":"942","auditItemId":"87e12387d73e4671a7c3ba802b5eb18a","filename":"dd03d18d08944585b55fd92a50c1f401.pdf","companyFullName":"大汉软件股份有限公司","fileSize":2384924,"StockType":1,"fileTitle":"8-2 毕马威华振会计师事务所（特殊普通合伙）关于大汉软件股份有限公司首次公开发行股票并在科创板上市申请文件的审核问询函回复的专项说明","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"82999612","OPERATION_SEQ":"250d0dd20ea2a2708595504196ff4a38"},{"fileUpdateTime":"20210630170004","filePath":"\/information\/c\/202106\/7d09ce43a4074a4ebeacfb2936e30b56.pdf","publishDate":"2021-06-30","fileLastVersion":2,"stockAuditNum":"942","auditItemId":"8f4de27fd98111eb9f2608f1ea8a847f","filename":"7d09ce43a4074a4ebeacfb2936e30b56.pdf","companyFullName":"大汉软件股份有限公司","fileSize":845627,"StockType":1,"fileTitle":"上海市锦天城律师事务所关于大汉软件股份公司首次公开发行股票并在科创板上市的法律意见书","auditStatus":1,"fileVersion":1,"fileType":33,"MarketType":1,"fileId":"195556","OPERATION_SEQ":"dac202d102ab3f91adf722ce44d12f8a"},{"fileUpdateTime":"20210630170004","filePath":"\/information\/c\/202106\/158b620a0bf145ae9676c00ecbf32a02.pdf","publishDate":"2021-06-30","fileLastVersion":2,"stockAuditNum":"942","auditItemId":"8f4de27fd98111eb9f2608f1ea8a847f","filename":"158b620a0bf145ae9676c00ecbf32a02.pdf","companyFullName":"大汉软件股份有限公司","fileSize":9371096,"StockType":1,"fileTitle":"毕马威华振会计师事务所（特殊普通合伙）关于大汉软件股份公司首次公开发行股票并在科创板上市的财务报表及审计报告","auditStatus":1,"fileVersion":1,"fileType":32,"MarketType":1,"fileId":"195552","OPERATION_SEQ":"dac202d102ab3f91adf722ce44d12f8a"},{"fileUpdateTime":"20210630170004","filePath":"\/information\/c\/202106\/1b287b654b2a403eae3e9dbc601c9637.pdf","publishDate":"2021-06-30","fileLastVersion":2,"stockAuditNum":"942","auditItemId":"8f4de27fd98111eb9f2608f1ea8a847f","filename":"1b287b654b2a403eae3e9dbc601c9637.pdf","companyFullName":"大汉软件股份有限公司","fileSize":1264237,"StockType":1,"fileTitle":"安信证券股份有限公司关于大汉软件股份公司首次公开发行股票并在科创板上市的上市保荐书","auditStatus":1,"fileVersion":1,"fileType":37,"MarketType":1,"fileId":"195546","OPERATION_SEQ":"dac202d102ab3f91adf722ce44d12f8a"},{"fileUpdateTime":"20210630170004","filePath":"\/information\/c\/202106\/48fec1eb0ad64a2cba146f6f2a74dcee.pdf","publishDate":"2021-06-30","fileLastVersion":2,"stockAuditNum":"942","auditItemId":"8f4de27fd98111eb9f2608f1ea8a847f","filename":"48fec1eb0ad64a2cba146f6f2a74dcee.pdf","companyFullName":"大汉软件股份有限公司","fileSize":1218337,"StockType":1,"fileTitle":"安信证券股份有限公司关于大汉软件股份公司首次公开发行股票并在科创板上市的发行保荐书","auditStatus":1,"fileVersion":1,"fileType":36,"MarketType":1,"fileId":"195544","OPERATION_SEQ":"dac202d102ab3f91adf722ce44d12f8a"},{"fileUpdateTime":"20210630170004","filePath":"\/information\/c\/202106\/0cb8ee1d3f4549a09458ac08f7290504.pdf","publishDate":"2021-06-30","fileLastVersion":2,"stockAuditNum":"942","auditItemId":"8f4de27fd98111eb9f2608f1ea8a847f","filename":"0cb8ee1d3f4549a09458ac08f7290504.pdf","companyFullName":"大汉软件股份有限公司","fileSize":10764426,"StockType":1,"fileTitle":"大汉软件股份有限公司科创板首次公开发行股票招股说明书（申报稿）","auditStatus":1,"fileVersion":1,"fileType":30,"MarketType":1,"fileId":"195537","OPERATION_SEQ":"dac202d102ab3f91adf722ce44d12f8a"}],"endDate":null,"endPage":null,"objectResult":null,"pageCount":1,"pageNo":1,"pageSize":15,"searchDate":null,"sort":null,"startDate":null,"total":15},"pageNo":null,"pageSize":null,"queryDate":"","result":[{"fileUpdateTime":"20211231173000","filePath":"\/information\/c\/202112\/61212b6e7f1d41758ec796c635dca875.pdf","publishDate":"2021-12-31","fileLastVersion":1,"stockAuditNum":"942","auditItemId":"39ea19626a1c11ec9f2608f1ea8a847f","filename":"61212b6e7f1d41758ec796c635dca875.pdf","companyFullName":"大汉软件股份有限公司","fileSize":309224,"StockType":1,"fileTitle":"关于终止对大汉软件股份有限公司首次公开发行股票并在科创板上市审核的决定","auditStatus":8,"fileVersion":4,"fileType":38,"MarketType":1,"fileId":"223439","OPERATION_SEQ":"9239c490b4d887502a2c4204d6f2c1a9"},{"fileUpdateTime":"20211230170001","filePath":"\/information\/c\/202112\/0b7a118a34d94416b003df304ec365ad.pdf","publishDate":"2021-12-30","fileLastVersion":1,"stockAuditNum":"942","auditItemId":"3bd89c5c3be741dc9c5b7bd317e13393","filename":"0b7a118a34d94416b003df304ec365ad.pdf","companyFullName":"大汉软件股份有限公司","fileSize":1939743,"StockType":1,"fileTitle":"8-1-2 发行人及保荐机构关于第二轮审核问询函的回复","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"83950911","OPERATION_SEQ":"69a4517cf2253e13fc2d8a3e4db5a5af"},{"fileUpdateTime":"20211230170001","filePath":"\/information\/c\/202112\/2c78f1add94544fb985e5d04fced3a0c.pdf","publishDate":"2021-12-30","fileLastVersion":1,"stockAuditNum":"942","auditItemId":"2bc9db5a71cd414dabf497a2c73689ee","filename":"2c78f1add94544fb985e5d04fced3a0c.pdf","companyFullName":"大汉软件股份有限公司","fileSize":943527,"StockType":1,"fileTitle":"8-2-2 申报会计师关于大汉软件股份有限公司首次公开发行股票并在科创板上市申请文件的审核第二轮问询函回复的专项说明","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"83950910","OPERATION_SEQ":"69a4517cf2253e13fc2d8a3e4db5a5af"},{"fileUpdateTime":"20211230170001","filePath":"\/information\/c\/202112\/299ccaf24da44dde99b47e85079cd886.pdf","publishDate":"2021-12-30","fileLastVersion":1,"stockAuditNum":"942","auditItemId":"51608979379d45688e864cfe57203b34","filename":"299ccaf24da44dde99b47e85079cd886.pdf","companyFullName":"大汉软件股份有限公司","fileSize":881602,"StockType":1,"fileTitle":"8-3 补充法律意见书（二）","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"83950909","OPERATION_SEQ":"69a4517cf2253e13fc2d8a3e4db5a5af"},{"fileUpdateTime":"20211224183000","filePath":"\/information\/c\/202112\/545b1ae7d78a47f894ee1a7058a76a52.pdf","publishDate":"2021-12-24","fileLastVersion":1,"stockAuditNum":"942","auditItemId":"7bf0a56a66e2490182ddcc9d55ddb6c9","filename":"545b1ae7d78a47f894ee1a7058a76a52.pdf","companyFullName":"大汉软件股份有限公司","fileSize":3174990,"StockType":1,"fileTitle":"8-1-1 发行人及保荐机构关于第一轮审核问询函的回复（2021年半年报财务数据更新版）","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"83900160","OPERATION_SEQ":"7b77b93262e7704ea174e30c28485d00"},{"fileUpdateTime":"20211224183000","filePath":"\/information\/c\/202112\/e0d096f9e6a547dbb13e857a659db3d2.pdf","publishDate":"2021-12-24","fileLastVersion":1,"stockAuditNum":"942","auditItemId":"d58f6c72947a4300bd3b0b7f63d411e3","filename":"e0d096f9e6a547dbb13e857a659db3d2.pdf","companyFullName":"大汉软件股份有限公司","fileSize":1855841,"StockType":1,"fileTitle":"8-2-1 申报会计师关于大汉软件股份有限公司首次公开发行股票并在科创板上市申请文件的审核问询函回复的专项说明（2021年半年报财务数据更新版）","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"83900159","OPERATION_SEQ":"7b77b93262e7704ea174e30c28485d00"},{"fileUpdateTime":"20211224183000","filePath":"\/information\/c\/202112\/7387c9dfea284f769fb2c40c0fece3b9.pdf","publishDate":"2021-12-24","fileLastVersion":1,"stockAuditNum":"942","auditItemId":"72cc681064a411ec9f2608f1ea8a847f","filename":"7387c9dfea284f769fb2c40c0fece3b9.pdf","companyFullName":"大汉软件股份有限公司","fileSize":877386,"StockType":1,"fileTitle":"3-3-1 补充法律意见书（二）","auditStatus":2,"fileVersion":1,"fileType":33,"MarketType":1,"fileId":"221379","OPERATION_SEQ":"7b77b93262e7704ea174e30c28485d00"},{"fileUpdateTime":"20210914170500","filePath":"\/information\/c\/202109\/2c4614c50a294572936dae91c8dbee68.pdf","publishDate":"2021-09-14","fileLastVersion":1,"stockAuditNum":"942","auditItemId":"224291a1b9334d46bf8ed1039cd35b72","filename":"2c4614c50a294572936dae91c8dbee68.pdf","companyFullName":"大汉软件股份有限公司","fileSize":5391111,"StockType":1,"fileTitle":"8-1 发行人及保荐机构关于大汉软件股份有限公司首次公开发行股票并在科创板上市申请文件的审核问询函的回复","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"82999614","OPERATION_SEQ":"250d0dd20ea2a2708595504196ff4a38"},{"fileUpdateTime":"20210914170500","filePath":"\/information\/c\/202109\/1915217e59d84bcd913c37a512591ff3.pdf","publishDate":"2021-09-14","fileLastVersion":1,"stockAuditNum":"942","auditItemId":"b02679d1f25d4734aeaa244e0b70f5e5","filename":"1915217e59d84bcd913c37a512591ff3.pdf","companyFullName":"大汉软件股份有限公司","fileSize":698723,"StockType":1,"fileTitle":"8-3 发行人律师出具的补充法律意见书（一）","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"82999613","OPERATION_SEQ":"250d0dd20ea2a2708595504196ff4a38"},{"fileUpdateTime":"20210914170500","filePath":"\/information\/c\/202109\/dd03d18d08944585b55fd92a50c1f401.pdf","publishDate":"2021-09-14","fileLastVersion":1,"stockAuditNum":"942","auditItemId":"87e12387d73e4671a7c3ba802b5eb18a","filename":"dd03d18d08944585b55fd92a50c1f401.pdf","companyFullName":"大汉软件股份有限公司","fileSize":2384924,"StockType":1,"fileTitle":"8-2 毕马威华振会计师事务所（特殊普通合伙）关于大汉软件股份有限公司首次公开发行股票并在科创板上市申请文件的审核问询函回复的专项说明","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"82999612","OPERATION_SEQ":"250d0dd20ea2a2708595504196ff4a38"},{"fileUpdateTime":"20210630170004","filePath":"\/information\/c\/202106\/7d09ce43a4074a4ebeacfb2936e30b56.pdf","publishDate":"2021-06-30","fileLastVersion":2,"stockAuditNum":"942","auditItemId":"8f4de27fd98111eb9f2608f1ea8a847f","filename":"7d09ce43a4074a4ebeacfb2936e30b56.pdf","companyFullName":"大汉软件股份有限公司","fileSize":845627,"StockType":1,"fileTitle":"上海市锦天城律师事务所关于大汉软件股份公司首次公开发行股票并在科创板上市的法律意见书","auditStatus":1,"fileVersion":1,"fileType":33,"MarketType":1,"fileId":"195556","OPERATION_SEQ":"dac202d102ab3f91adf722ce44d12f8a"},{"fileUpdateTime":"20210630170004","filePath":"\/information\/c\/202106\/158b620a0bf145ae9676c00ecbf32a02.pdf","publishDate":"2021-06-30","fileLastVersion":2,"stockAuditNum":"942","auditItemId":"8f4de27fd98111eb9f2608f1ea8a847f","filename":"158b620a0bf145ae9676c00ecbf32a02.pdf","companyFullName":"大汉软件股份有限公司","fileSize":9371096,"StockType":1,"fileTitle":"毕马威华振会计师事务所（特殊普通合伙）关于大汉软件股份公司首次公开发行股票并在科创板上市的财务报表及审计报告","auditStatus":1,"fileVersion":1,"fileType":32,"MarketType":1,"fileId":"195552","OPERATION_SEQ":"dac202d102ab3f91adf722ce44d12f8a"},{"fileUpdateTime":"20210630170004","filePath":"\/information\/c\/202106\/1b287b654b2a403eae3e9dbc601c9637.pdf","publishDate":"2021-06-30","fileLastVersion":2,"stockAuditNum":"942","auditItemId":"8f4de27fd98111eb9f2608f1ea8a847f","filename":"1b287b654b2a403eae3e9dbc601c9637.pdf","companyFullName":"大汉软件股份有限公司","fileSize":1264237,"StockType":1,"fileTitle":"安信证券股份有限公司关于大汉软件股份公司首次公开发行股票并在科创板上市的上市保荐书","auditStatus":1,"fileVersion":1,"fileType":37,"MarketType":1,"fileId":"195546","OPERATION_SEQ":"dac202d102ab3f91adf722ce44d12f8a"},{"fileUpdateTime":"20210630170004","filePath":"\/information\/c\/202106\/48fec1eb0ad64a2cba146f6f2a74dcee.pdf","publishDate":"2021-06-30","fileLastVersion":2,"stockAuditNum":"942","auditItemId":"8f4de27fd98111eb9f2608f1ea8a847f","filename":"48fec1eb0ad64a2cba146f6f2a74dcee.pdf","companyFullName":"大汉软件股份有限公司","fileSize":1218337,"StockType":1,"fileTitle":"安信证券股份有限公司关于大汉软件股份公司首次公开发行股票并在科创板上市的发行保荐书","auditStatus":1,"fileVersion":1,"fileType":36,"MarketType":1,"fileId":"195544","OPERATION_SEQ":"dac202d102ab3f91adf722ce44d12f8a"},{"fileUpdateTime":"20210630170004","filePath":"\/information\/c\/202106\/0cb8ee1d3f4549a09458ac08f7290504.pdf","publishDate":"2021-06-30","fileLastVersion":2,"stockAuditNum":"942","auditItemId":"8f4de27fd98111eb9f2608f1ea8a847f","filename":"0cb8ee1d3f4549a09458ac08f7290504.pdf","companyFullName":"大汉软件股份有限公司","fileSize":10764426,"StockType":1,"fileTitle":"大汉软件股份有限公司科创板首次公开发行股票招股说明书（申报稿）","auditStatus":1,"fileVersion":1,"fileType":30,"MarketType":1,"fileId":"195537","OPERATION_SEQ":"dac202d102ab3f91adf722ce44d12f8a"}],"securityCode":"","texts":null,"type":"","validateCode":""})"#,
+            r#"jsonpCallback99435173({"actionErrors":[],"actionMessages":[],"fieldErrors":{},"isPagination":"false","jsonCallBack":"jsonpCallback99435173","locale":"en_US","pageHelp":{"beginPage":1,"cacheSize":1,"data":[{"fileUpdateTime":"20220107174000","filePath":"\/information\/c\/202201\/d078b75188094a5d9848073e3099dc97.pdf","publishDate":"2022-01-07","fileLastVersion":1,"stockAuditNum":"1037","auditItemId":"506c1fe4277c4b39aa750b4d3a8fa22b","filename":"d078b75188094a5d9848073e3099dc97.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":638900,"StockType":1,"fileTitle":"8-3 补充法律意见书","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"84021742","OPERATION_SEQ":"c9339ecf660cc1553dcbb668e0f10277"},{"fileUpdateTime":"20220107174000","filePath":"\/information\/c\/202201\/6550a785ae9f4c01bcad74d8ed07e339.pdf","publishDate":"2022-01-07","fileLastVersion":1,"stockAuditNum":"1037","auditItemId":"ab6fe7cdbc194ff985b3f3d7d687f1c5","filename":"6550a785ae9f4c01bcad74d8ed07e339.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":3188045,"StockType":1,"fileTitle":"8-2 会计师关于德邦科技科创板上市首轮问询回复意见","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"84021741","OPERATION_SEQ":"c9339ecf660cc1553dcbb668e0f10277"},{"fileUpdateTime":"20220107174000","filePath":"\/information\/c\/202201\/99858ffdaa4a45c18028374b840b135b.pdf","publishDate":"2022-01-07","fileLastVersion":1,"stockAuditNum":"1037","auditItemId":"3df19f054fe749ecb5ddd1372b26884e","filename":"99858ffdaa4a45c18028374b840b135b.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":3114905,"StockType":1,"fileTitle":"8-1 发行人及保荐机构关于审核问询函的回复(豁免版)","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"84021740","OPERATION_SEQ":"c9339ecf660cc1553dcbb668e0f10277"},{"fileUpdateTime":"20211012170001","filePath":"\/information\/c\/202110\/dbdbfa8875ef40298638549ab1524817.pdf","publishDate":"2021-10-12","fileLastVersion":2,"stockAuditNum":"1037","auditItemId":"c89859bf2b3a11ec9f2608f1ea8a847f","filename":"dbdbfa8875ef40298638549ab1524817.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":11888035,"StockType":1,"fileTitle":"永拓会计师事务所（特殊普通合伙）关于烟台德邦科技股份有限公司首次公开发行股票并在科创板上市的财务报表及审计报告","auditStatus":1,"fileVersion":1,"fileType":32,"MarketType":1,"fileId":"209049","OPERATION_SEQ":"2d2d8d56e0984f7ab38c008edcf491d4"},{"fileUpdateTime":"20211012170001","filePath":"\/information\/c\/202110\/e5b671d8cec14bf3883e8abd45fc3a96.pdf","publishDate":"2021-10-12","fileLastVersion":2,"stockAuditNum":"1037","auditItemId":"c89859bf2b3a11ec9f2608f1ea8a847f","filename":"e5b671d8cec14bf3883e8abd45fc3a96.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":736749,"StockType":1,"fileTitle":"东方证券承销保荐有限公司关于烟台德邦科技股份有限公司首次公开发行股票并在科创板上市的上市保荐书","auditStatus":1,"fileVersion":1,"fileType":37,"MarketType":1,"fileId":"209043","OPERATION_SEQ":"2d2d8d56e0984f7ab38c008edcf491d4"},{"fileUpdateTime":"20211012170001","filePath":"\/information\/c\/202110\/666b8b084d1e4720bc90aa19a40fab5a.pdf","publishDate":"2021-10-12","fileLastVersion":2,"stockAuditNum":"1037","auditItemId":"c89859bf2b3a11ec9f2608f1ea8a847f","filename":"666b8b084d1e4720bc90aa19a40fab5a.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":703086,"StockType":1,"fileTitle":"东方证券承销保荐有限公司关于烟台德邦科技股份有限公司首次公开发行股票并在科创板上市的发行保荐书","auditStatus":1,"fileVersion":1,"fileType":36,"MarketType":1,"fileId":"209041","OPERATION_SEQ":"2d2d8d56e0984f7ab38c008edcf491d4"}],"endDate":null,"endPage":null,"objectResult":null,"pageCount":1,"pageNo":1,"pageSize":6,"searchDate":null,"sort":null,"startDate":null,"total":6},"pageNo":null,"pageSize":null,"queryDate":"","result":[{"fileUpdateTime":"20220107174000","filePath":"\/information\/c\/202201\/d078b75188094a5d9848073e3099dc97.pdf","publishDate":"2022-01-07","fileLastVersion":1,"stockAuditNum":"1037","auditItemId":"506c1fe4277c4b39aa750b4d3a8fa22b","filename":"d078b75188094a5d9848073e3099dc97.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":638900,"StockType":1,"fileTitle":"8-3 补充法律意见书","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"84021742","OPERATION_SEQ":"c9339ecf660cc1553dcbb668e0f10277"},{"fileUpdateTime":"20220107174000","filePath":"\/information\/c\/202201\/6550a785ae9f4c01bcad74d8ed07e339.pdf","publishDate":"2022-01-07","fileLastVersion":1,"stockAuditNum":"1037","auditItemId":"ab6fe7cdbc194ff985b3f3d7d687f1c5","filename":"6550a785ae9f4c01bcad74d8ed07e339.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":3188045,"StockType":1,"fileTitle":"8-2 会计师关于德邦科技科创板上市首轮问询回复意见","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"84021741","OPERATION_SEQ":"c9339ecf660cc1553dcbb668e0f10277"},{"fileUpdateTime":"20220107174000","filePath":"\/information\/c\/202201\/99858ffdaa4a45c18028374b840b135b.pdf","publishDate":"2022-01-07","fileLastVersion":1,"stockAuditNum":"1037","auditItemId":"3df19f054fe749ecb5ddd1372b26884e","filename":"99858ffdaa4a45c18028374b840b135b.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":3114905,"StockType":1,"fileTitle":"8-1 发行人及保荐机构关于审核问询函的回复(豁免版)","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"84021740","OPERATION_SEQ":"c9339ecf660cc1553dcbb668e0f10277"},{"fileUpdateTime":"20211012170001","filePath":"\/information\/c\/202110\/dbdbfa8875ef40298638549ab1524817.pdf","publishDate":"2021-10-12","fileLastVersion":2,"stockAuditNum":"1037","auditItemId":"c89859bf2b3a11ec9f2608f1ea8a847f","filename":"dbdbfa8875ef40298638549ab1524817.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":11888035,"StockType":1,"fileTitle":"永拓会计师事务所（特殊普通合伙）关于烟台德邦科技股份有限公司首次公开发行股票并在科创板上市的财务报表及审计报告","auditStatus":1,"fileVersion":1,"fileType":32,"MarketType":1,"fileId":"209049","OPERATION_SEQ":"2d2d8d56e0984f7ab38c008edcf491d4"},{"fileUpdateTime":"20211012170001","filePath":"\/information\/c\/202110\/e5b671d8cec14bf3883e8abd45fc3a96.pdf","publishDate":"2021-10-12","fileLastVersion":2,"stockAuditNum":"1037","auditItemId":"c89859bf2b3a11ec9f2608f1ea8a847f","filename":"e5b671d8cec14bf3883e8abd45fc3a96.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":736749,"StockType":1,"fileTitle":"东方证券承销保荐有限公司关于烟台德邦科技股份有限公司首次公开发行股票并在科创板上市的上市保荐书","auditStatus":1,"fileVersion":1,"fileType":37,"MarketType":1,"fileId":"209043","OPERATION_SEQ":"2d2d8d56e0984f7ab38c008edcf491d4"},{"fileUpdateTime":"20211012170001","filePath":"\/information\/c\/202110\/666b8b084d1e4720bc90aa19a40fab5a.pdf","publishDate":"2021-10-12","fileLastVersion":2,"stockAuditNum":"1037","auditItemId":"c89859bf2b3a11ec9f2608f1ea8a847f","filename":"666b8b084d1e4720bc90aa19a40fab5a.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":703086,"StockType":1,"fileTitle":"东方证券承销保荐有限公司关于烟台德邦科技股份有限公司首次公开发行股票并在科创板上市的发行保荐书","auditStatus":1,"fileVersion":1,"fileType":36,"MarketType":1,"fileId":"209041","OPERATION_SEQ":"2d2d8d56e0984f7ab38c008edcf491d4"}],"securityCode":"","texts":null,"type":"","validateCode":""})"#,
         );
         let disclosure = InfoDisclosure::try_from(raw_data);
         println!("{:#?}", disclosure);
@@ -773,8 +787,7 @@ mod tests {
     #[tokio::test]
     async fn test_query_company_info() {
         let mut client = ReqClient::new();
-        let company =
-            query_company_overview(&mut client,"大汉软件股份有限公司")
+        let company = query_company_overview(&mut client, "大汉软件股份有限公司")
             .await
             .unwrap();
         println!("{:#?}", company)
@@ -796,7 +809,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_company() {
-        let sse = process_company("大汉软件股份有限公司").await;
+        let mut client = ReqClient::new();
+        let sse = process_company(&mut client, "烟台德邦科技股份有限公司").await;
         println!("{:#?}", sse);
     }
 
@@ -806,10 +820,17 @@ mod tests {
         let now = Instant::now();
         let mut client = ReqClient::new();
         let mut sse = SseQuery::new();
-        let companies = ["上海赛伦生物技术股份有限公司", "大汉软件股份有限公司","浙江海正生物材料股份有限公司","江苏集萃药康生物科技股份有限公司"];
+        let companies = [
+            "上海赛伦生物技术股份有限公司",
+            "大汉软件股份有限公司",
+            "浙江海正生物材料股份有限公司",
+            "江苏集萃药康生物科技股份有限公司",
+        ];
         for i in 0..companies.len() {
-            let info = process_company(companies[i]).await;
-            download_company_files(&info.as_ref().unwrap()).await;
+            let info = process_company(&mut client, companies[i]).await;
+            download_company_files(&mut client, &info.as_ref().unwrap())
+                .await
+                .unwrap();
             sse.add(info);
         }
         println!("{:#?}", sse);
@@ -820,13 +841,19 @@ mod tests {
     async fn test_process_more_companies_true_async() {
         let now = Instant::now();
         let mut sse = Arc::new(Mutex::new(SseQuery::new()));
-        let companies = ["上海赛伦生物技术股份有限公司", "大汉软件股份有限公司","浙江海正生物材料股份有限公司","江苏集萃药康生物科技股份有限公司"];
+        let companies = [
+            "上海赛伦生物技术股份有限公司",
+            "大汉软件股份有限公司",
+            "浙江海正生物材料股份有限公司",
+            "江苏集萃药康生物科技股份有限公司",
+        ];
         let mut handles = Vec::with_capacity(companies.len());
         for i in 0..companies.len() {
             let sse_copy = sse.clone();
             handles.push(tokio::spawn(async move {
-                let ret = process_company(companies[i]).await;
-                download_company_files(&ret.as_ref().unwrap()).await;
+                let mut client = ReqClient::new();
+                let ret = process_company(&mut client, companies[i]).await;
+                download_company_files(&mut client, &ret.as_ref().unwrap()).await;
                 let mut copy = sse_copy.lock().await;
                 copy.add(ret);
             }));
@@ -844,25 +871,31 @@ mod tests {
     async fn test_create_subfolder() {
         let mut sse = SseQuery::new();
         let mut client = ReqClient::new();
-        let item = process_company("大汉软件股份有限公司").await;
+        let item = process_company(&mut client, "大汉软件股份有限公司").await;
         sse.add(item);
-        download_company_files( &sse.companies[0]).await;
+        download_company_files(&mut client, &sse.companies[0]).await;
         // println!("{:#?}", sse);
     }
 
     #[tokio::test]
-    async fn test_control_concurrency_num(){
+    async fn test_control_concurrency_num() {
         let now = Instant::now();
         let mut sse = Arc::new(Mutex::new(SseQuery::new()));
-        let companies = ["上海赛伦生物技术股份有限公司", "大汉软件股份有限公司","浙江海正生物材料股份有限公司","江苏集萃药康生物科技股份有限公司"];
-        let idx:Vec<usize> = (0..companies.len()).collect();
+        let companies = [
+            "上海赛伦生物技术股份有限公司",
+            "大汉软件股份有限公司",
+            "浙江海正生物材料股份有限公司",
+            "江苏集萃药康生物科技股份有限公司",
+        ];
+        let idx: Vec<usize> = (0..companies.len()).collect();
         for chunk in idx.chunks(2) {
             let mut handles = Vec::with_capacity(2);
             for &elem in chunk.iter() {
                 let sse_copy = sse.clone();
                 handles.push(tokio::spawn(async move {
-                    let ret = process_company(companies[elem]).await;
-                    // download_company_files(&ret.as_ref().unwrap()).await;
+                    let mut client = ReqClient::new();
+                    let ret = process_company(&mut client, companies[elem]).await;
+                    download_company_files(&mut client, &ret.as_ref().unwrap()).await;
                     let mut copy = sse_copy.lock().await;
                     copy.add(ret);
                 }));
