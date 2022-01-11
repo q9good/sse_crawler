@@ -96,9 +96,10 @@ impl TryFrom<String> for CompanyInfo {
         }
         Ok(CompanyInfo {
             stock_audit_name: {
-                let company_name = json_body["result"][0]["stockAuditName"].as_str();
+                // let company_name = json_body["result"][0]["stockAuditName"].as_str();
+                let company_name = json_body["result"][0]["stockIssuer"][0]["s_issueCompanyFullName"].as_str();
                 if let Some(temp) = company_name {
-                    temp.to_owned()
+                    temp.trim().to_owned()
                 } else {
                     return Err(anyhow!("get company name failed"));
                 }
@@ -226,7 +227,8 @@ impl TryFrom<String> for InfoDisclosure {
                     path.push(
                         x["companyFullName"]
                             .as_str()
-                            .context("get company name failed")?,
+                            .context("get company name failed")?
+                            .trim(),
                     );
                     path
                 },
@@ -434,9 +436,8 @@ pub struct MeetingAnnounce {
     announcements: Vec<Option<UploadFile>>,
 }
 
-impl TryFrom<String> for MeetingAnnounce {
-    type Error = anyhow::Error;
-    fn try_from(resp: String) -> Result<Self, Self::Error> {
+impl MeetingAnnounce {
+    fn new(resp: String, id: u32) -> Result<MeetingAnnounce, anyhow::Error> {
         #[allow(clippy::useless_format)]
         let json_str = format!(
             r#"{}"#,
@@ -463,9 +464,29 @@ impl TryFrom<String> for MeetingAnnounce {
                     // download_base.join(download_url)?
                 },
                 path: {
-                    let company_name = x["stockAudit"][0]["companyFullName"]
-                        .as_str()
-                        .context("get company name failed")?;
+                    let stock_loop = x["stockAudit"].as_array().unwrap();
+                    let company_name = {
+                        let mut idx: usize = 0;
+                        for i in 0..stock_loop.len() {
+                            let audit_id = x["stockAudit"][i]["auditId"]
+                                .as_str()
+                                .unwrap()
+                                .parse::<u32>()
+                                .unwrap();
+                            if audit_id == id {
+                                idx = i;
+                                break;
+                            }
+                        }
+                        x["stockAudit"][idx]["companyFullName"]
+                            .as_str()
+                            .context("get company name failed")?
+                            .trim()
+                    };
+                    // x["stockAudit"]
+                    // [x["stockAudit"].as_array().unwrap().len() - 1]["companyFullName"]
+                    // .as_str()
+                    // .context("get company name failed")?;
                     let mut path = PathBuf::new();
                     path.push("Download");
                     path.push(company_name);
@@ -565,7 +586,7 @@ async fn query_company_announce(client: &mut ReqClient, id: u32) -> Result<Meeti
     let resp = client.0.get(url).send().await?;
 
     let body = resp.text().await?;
-    Ok(MeetingAnnounce::try_from(body)?)
+    Ok(MeetingAnnounce::new(body, id)?)
 }
 
 pub async fn process_company(
@@ -584,16 +605,20 @@ pub async fn process_company(
                 disclosure: disclosure.unwrap(),
                 announce: announce.unwrap(),
             };
-            #[cfg(not(test))]
+            // #[cfg(not(test))]
             {
                 let ret = download_company_files(client, &item).await;
                 match ret {
                     Ok(_) => Ok(item),
-                    Err(_) => Err(name.to_owned()),
+                    Err(e) => {
+                        let mut err_msg = format!("{}", e);
+                        err_msg.push_str(name);
+                        Err(err_msg)
+                    }
                 }
             }
-            #[cfg(test)]
-            Ok(item)
+            // #[cfg(test)]
+            // Ok(item)
         } else {
             Err(name.to_owned())
         }
@@ -675,7 +700,8 @@ pub async fn download_company_files(
         let y = x.as_ref().unwrap();
         download_tasks.push((&y.url, &y.path));
     });
-    // println!("{:#?}", download_tasks);
+    #[cfg(test)]
+    println!("{:#?}", download_tasks);
     for (url, path) in download_tasks {
         // println!("{:#?}", url.clone().as_str());
         if !path.exists() {
@@ -810,7 +836,7 @@ mod tests {
     #[tokio::test]
     async fn test_process_company() {
         let mut client = ReqClient::new();
-        let sse = process_company(&mut client, "烟台德邦科技股份有限公司").await;
+        let sse = process_company(&mut client, "广东安达智能装备股份有限公司").await;
         println!("{:#?}", sse);
     }
 
