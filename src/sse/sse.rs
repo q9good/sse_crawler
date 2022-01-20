@@ -18,6 +18,7 @@ static SPONSOR_SUBFOLDER: &str = "问询与回复/发行人与保荐机构";
 static ACCOUNTANT_SUBFOLDER: &str = "问询与回复/会计师";
 static LAWYER_SUBFOLDER: &str = "问询与回复/律师";
 static RESULT_SUBFOLDER: &str = "结果";
+static UNCLASSIFIED_SUBFOLDER: &str = "问询与回复/未分组";
 
 static SUBFOLDERS: [&str; 7] = [
     DECLARE_SUBFOLDER,
@@ -83,13 +84,10 @@ fn parse_date_from_sse(input: &str) -> anyhow::Result<PrimitiveDateTime> {
 impl TryFrom<String> for CompanyInfo {
     type Error = anyhow::Error;
     fn try_from(resp: String) -> Result<Self, Self::Error> {
+        let pure_content: Vec<_> = resp.split_inclusive(&['(', ')'][..]).collect();
         #[allow(clippy::useless_format)]
-        let json_str = format!(
-            r#"{}"#,
-            resp.split_terminator(&['(', ')'][..])
-                .next_back()
-                .context("invalid input")?
-        );
+        let mut json_str = format!(r#"{}"#, pure_content[1..].join(""));
+        json_str.truncate(json_str.len() - 1);
         let json_body: Value = serde_json::from_str(&json_str)?;
         if matches!(&json_body["result"], Value::Array(result) if result.is_empty()) {
             return Err(anyhow!("empty company info"));
@@ -97,7 +95,8 @@ impl TryFrom<String> for CompanyInfo {
         Ok(CompanyInfo {
             stock_audit_name: {
                 // let company_name = json_body["result"][0]["stockAuditName"].as_str();
-                let company_name = json_body["result"][0]["stockIssuer"][0]["s_issueCompanyFullName"].as_str();
+                let company_name =
+                    json_body["result"][0]["stockIssuer"][0]["s_issueCompanyFullName"].as_str();
                 if let Some(temp) = company_name {
                     temp.trim().to_owned()
                 } else {
@@ -176,17 +175,17 @@ pub struct InfoDisclosure {
      *
      */
     // 招股说明书
-    prospectuses: [Option<UploadFile>; 3],
+    prospectuses: [Vec<UploadFile>; 3],
     // 发行保荐书
-    publish_sponsor: [Option<UploadFile>; 3],
+    publish_sponsor: [Vec<UploadFile>; 3],
     // 上市保荐书
-    list_sponsor: [Option<UploadFile>; 3],
+    list_sponsor: [Vec<UploadFile>; 3],
     // 审计报告
-    audit_report: [Option<UploadFile>; 3],
+    audit_report: [Vec<UploadFile>; 3],
     // 法律意见书
-    legal_opinion: [Option<UploadFile>; 3],
+    legal_opinion: [Vec<UploadFile>; 3],
     // 其他
-    others: [Option<UploadFile>; 3],
+    others: [Vec<UploadFile>; 3],
     /* #### 问询与回复
      * ----
      */
@@ -211,6 +210,7 @@ impl TryFrom<String> for InfoDisclosure {
             .context("extract file array failed")?;
         let mut download_base = Url::parse("http://static.sse.com.cn/stock/")?;
         let ret = file_arr.iter().try_for_each(|x| {
+            let date = x["publishDate"].as_str().context("get filename failed")?;
             let mut file = UploadFile {
                 filename: {
                     let name = x["fileTitle"].as_str().context("get filename failed")?;
@@ -239,145 +239,163 @@ impl TryFrom<String> for InfoDisclosure {
                 // 招股说明书, 申报稿
                 (Some(30), Some(1)) => {
                     file.path.push(DECLARE_SUBFOLDER);
+                    file.filename.push_str(date);
                     file.path.push(&file.filename);
                     file.path.set_extension("pdf");
-                    infos.prospectuses[0] = Some(file);
+                    infos.prospectuses[0].push(file);
                     Ok(())
                 }
                 // 招股说明书, 上会稿
                 (Some(30), Some(2)) => {
                     file.path.push(MEETING_SUBFOLDER);
+                    file.filename.push_str(date);
                     file.path.push(&file.filename);
                     file.path.set_extension("pdf");
-                    infos.prospectuses[1] = Some(file);
+                    infos.prospectuses[1].push(file);
                     Ok(())
                 }
                 // 招股说明书, 注册稿
-                (Some(30), Some(3)) => {
+                (Some(30), Some(3|4)) => {
                     file.path.push(REGISTER_SUBFOLDER);
+                    file.filename.push_str(date);
                     file.path.push(&file.filename);
                     file.path.set_extension("pdf");
-                    infos.prospectuses[2] = Some(file);
+                    infos.prospectuses[2].push(file);
                     Ok(())
                 }
                 // 发行保荐书, 申报稿
                 (Some(36), Some(1)) => {
                     file.path.push(DECLARE_SUBFOLDER);
+                    file.filename.push_str(date);
                     file.path.push(&file.filename);
                     file.path.set_extension("pdf");
-                    infos.publish_sponsor[0] = Some(file);
+                    infos.publish_sponsor[0].push(file);
                     Ok(())
                 }
                 // 发行保荐书, 上会稿
                 (Some(36), Some(2)) => {
                     file.path.push(MEETING_SUBFOLDER);
+                    file.filename.push_str(date);
                     file.path.push(&file.filename);
                     file.path.set_extension("pdf");
-                    infos.publish_sponsor[1] = Some(file);
+                    infos.publish_sponsor[1].push(file);
                     Ok(())
                 }
                 // 发行保荐书, 注册稿
-                (Some(36), Some(3)) => {
+                (Some(36), Some(3|4)) => {
                     file.path.push(REGISTER_SUBFOLDER);
+                    file.filename.push_str(date);
                     file.path.push(&file.filename);
                     file.path.set_extension("pdf");
-                    infos.publish_sponsor[2] = Some(file);
+                    infos.publish_sponsor[2].push(file);
                     Ok(())
                 }
                 // 上市保荐书, 申报稿
                 (Some(37), Some(1)) => {
                     file.path.push(DECLARE_SUBFOLDER);
+                    file.filename.push_str(date);
                     file.path.push(&file.filename);
                     file.path.set_extension("pdf");
-                    infos.list_sponsor[0] = Some(file);
+                    infos.list_sponsor[0].push(file);
                     Ok(())
                 }
                 // 上市保荐书, 上会稿
                 (Some(37), Some(2)) => {
                     file.path.push(MEETING_SUBFOLDER);
+                    file.filename.push_str(date);
                     file.path.push(&file.filename);
                     file.path.set_extension("pdf");
-                    infos.list_sponsor[1] = Some(file);
+                    infos.list_sponsor[1].push(file);
                     Ok(())
                 }
                 // 上市保荐书, 注册稿
-                (Some(37), Some(3)) => {
+                (Some(37), Some(3|4)) => {
                     file.path.push(REGISTER_SUBFOLDER);
+                    file.filename.push_str(date);
                     file.path.push(&file.filename);
                     file.path.set_extension("pdf");
-                    infos.list_sponsor[2] = Some(file);
+                    infos.list_sponsor[2].push(file);
                     Ok(())
                 }
                 // 审计报告, 申报稿
                 (Some(32), Some(1)) => {
                     file.path.push(DECLARE_SUBFOLDER);
+                    file.filename.push_str(date);
                     file.path.push(&file.filename);
                     file.path.set_extension("pdf");
-                    infos.audit_report[0] = Some(file);
+                    infos.audit_report[0].push(file);
                     Ok(())
                 }
                 // 审计报告, 上会稿
                 (Some(32), Some(2)) => {
                     file.path.push(MEETING_SUBFOLDER);
+                    file.filename.push_str(date);
                     file.path.push(&file.filename);
                     file.path.set_extension("pdf");
-                    infos.audit_report[1] = Some(file);
+                    infos.audit_report[1].push(file);
                     Ok(())
                 }
                 // 审计报告, 注册稿
-                (Some(32), Some(3)) => {
+                (Some(32), Some(3|4)) => {
                     file.path.push(REGISTER_SUBFOLDER);
+                    file.filename.push_str(date);
                     file.path.push(&file.filename);
                     file.path.set_extension("pdf");
-                    infos.audit_report[2] = Some(file);
+                    infos.audit_report[2].push(file);
                     Ok(())
                 }
                 // 法律意见书, 申报稿
                 (Some(33), Some(1)) => {
                     file.path.push(DECLARE_SUBFOLDER);
+                    file.filename.push_str(date);
                     file.path.push(&file.filename);
                     file.path.set_extension("pdf");
-                    infos.legal_opinion[0] = Some(file);
+                    infos.legal_opinion[0].push(file);
                     Ok(())
                 }
                 // 法律意见书, 上会稿
                 (Some(33), Some(2)) => {
                     file.path.push(MEETING_SUBFOLDER);
+                    file.filename.push_str(date);
                     file.path.push(&file.filename);
                     file.path.set_extension("pdf");
-                    infos.legal_opinion[1] = Some(file);
+                    infos.legal_opinion[1].push(file);
                     Ok(())
                 }
                 // 法律意见书, 注册稿
-                (Some(33), Some(3)) => {
+                (Some(33), Some(3|4)) => {
                     file.path.push(REGISTER_SUBFOLDER);
+                    file.filename.push_str(date);
                     file.path.push(&file.filename);
                     file.path.set_extension("pdf");
-                    infos.legal_opinion[2] = Some(file);
+                    infos.legal_opinion[2].push(file);
                     Ok(())
                 }
                 // 其他, 申报稿
                 (Some(34), Some(1)) => {
                     file.path.push(DECLARE_SUBFOLDER);
+                    file.filename.push_str(date);
                     file.path.push(&file.filename);
                     file.path.set_extension("pdf");
-                    infos.others[0] = Some(file);
+                    infos.others[0].push(file);
                     Ok(())
                 }
                 // 其他, 上会稿
                 (Some(34), Some(2)) => {
                     file.path.push(MEETING_SUBFOLDER);
+                    file.filename.push_str(date);
                     file.path.push(&file.filename);
                     file.path.set_extension("pdf");
-                    infos.others[1] = Some(file);
+                    infos.others[1].push(file);
                     Ok(())
                 }
                 // 其他, 注册稿
-                (Some(34), Some(3)) => {
+                (Some(34), Some(3|4)) => {
                     file.path.push(REGISTER_SUBFOLDER);
+                    file.filename.push_str(date);
                     file.path.push(&file.filename);
                     file.path.set_extension("pdf");
-                    infos.others[2] = Some(file);
+                    infos.others[2].push(file);
                     Ok(())
                 }
                 // 问询和回复
@@ -438,13 +456,10 @@ pub struct MeetingAnnounce {
 
 impl MeetingAnnounce {
     fn new(resp: String, id: u32) -> Result<MeetingAnnounce, anyhow::Error> {
+        let pure_content: Vec<_> = resp.split_inclusive(&['(', ')'][..]).collect();
         #[allow(clippy::useless_format)]
-        let json_str = format!(
-            r#"{}"#,
-            resp.split_terminator(&['(', ')'][..])
-                .next_back()
-                .context("invalid input")?
-        );
+        let mut json_str = format!(r#"{}"#, pure_content[1..].join(""));
+        json_str.truncate(json_str.len() - 1);
         let json_body: Value = serde_json::from_str(&json_str)?;
         let mut announce = MeetingAnnounce::default();
         let file_arr = json_body["result"]
@@ -620,9 +635,12 @@ pub async fn process_company(
             // #[cfg(test)]
             // Ok(item)
         } else {
+            // println!("{:#?}", disclosure);
+            // println!("{:#?}", &announce);
             Err(name.to_owned())
         }
     } else {
+        println!("{:#?}", company_info);
         Err(name.to_owned())
     }
 }
@@ -644,40 +662,34 @@ pub async fn download_company_files(
 
     let mut download_tasks = Vec::<(&Url, &PathBuf)>::new();
     company.disclosure.prospectuses.iter().for_each(|x| {
-        if x.is_some() {
-            let y = x.as_ref().unwrap();
+        x.iter().for_each(|y| {
             download_tasks.push((&y.url, &y.path));
-        }
+        })
     });
     company.disclosure.publish_sponsor.iter().for_each(|x| {
-        if x.is_some() {
-            let y = x.as_ref().unwrap();
+        x.iter().for_each(|y| {
             download_tasks.push((&y.url, &y.path));
-        }
+        })
     });
     company.disclosure.list_sponsor.iter().for_each(|x| {
-        if x.is_some() {
-            let y = x.as_ref().unwrap();
+        x.iter().for_each(|y| {
             download_tasks.push((&y.url, &y.path));
-        }
+        })
     });
     company.disclosure.audit_report.iter().for_each(|x| {
-        if x.is_some() {
-            let y = x.as_ref().unwrap();
+        x.iter().for_each(|y| {
             download_tasks.push((&y.url, &y.path));
-        }
+        })
     });
     company.disclosure.legal_opinion.iter().for_each(|x| {
-        if x.is_some() {
-            let y = x.as_ref().unwrap();
+        x.iter().for_each(|y| {
             download_tasks.push((&y.url, &y.path));
-        }
+        })
     });
     company.disclosure.others.iter().for_each(|x| {
-        if x.is_some() {
-            let y = x.as_ref().unwrap();
+        x.iter().for_each(|y| {
             download_tasks.push((&y.url, &y.path));
-        }
+        })
     });
     company.disclosure.query_and_reply.iter().for_each(|x| {
         let y = x.as_ref().unwrap();
@@ -685,7 +697,14 @@ pub async fn download_company_files(
             QueryReply::Sponsor(z) => download_tasks.push((&z.url, &z.path)),
             QueryReply::Accountant(z) => download_tasks.push((&z.url, &z.path)),
             QueryReply::Lawyer(z) => download_tasks.push((&z.url, &z.path)),
-            QueryReply::Other(z) => download_tasks.push((&z.url, &z.path)),
+            QueryReply::Other(z) => {
+                let sub_folder: PathBuf = ["Download", base_folder, UNCLASSIFIED_SUBFOLDER]
+                    .iter()
+                    .collect::<PathBuf>();
+                std::fs::create_dir_all(sub_folder)
+                    .unwrap_or_else(|why| println!("! {:?}", why.kind()));
+                download_tasks.push((&z.url, &z.path))
+            }
         }
     });
     company
@@ -786,7 +805,7 @@ mod tests {
     #[test]
     fn test_company_info_try_from_json() {
         let raw_data = String::from(
-            r#"jsonpCallback85975({"actionErrors":[],"actionMessages":[],"downloadFileName":null,"execlStream":null,"fieldErrors":{},"fileId":null,"isPagination":"true","jsonCallBack":"jsonpCallback85975","locale":"zh_CN","mergeSize":null,"mergeType":null,"pageHelp":{"beginPage":1,"cacheSize":1,"data":[{"updateDate":"20211230191852","planIssueCapital":12.09,"suspendStatus":"","wenHao":"","stockAuditName":"北京英诺特生物技术股份有限公司","currStatus":2,"stockAuditNum":"924","registeResult":"","intermediary":[{"auditId":"924","i_intermediaryType":1,"i_intermediaryId":"0_1047","i_person":[{"i_p_personName":"董炜源","i_p_jobType":24,"i_p_personId":"787524","i_p_jobTitle":"项目协办人"},{"i_p_personName":"郑明欣","i_p_jobType":23,"i_p_personId":"787523","i_p_jobTitle":"保荐代表人B"},{"i_p_personName":"丁明明","i_p_jobType":22,"i_p_personId":"787522","i_p_jobTitle":"保荐代表人A"},{"i_p_personName":"唐松华","i_p_jobType":21,"i_p_personId":"787519","i_p_jobTitle":"保荐业务负责人"}],"i_intermediaryAbbrName":"华泰联合证券","i_intermediaryName":"华泰联合证券有限责任公司","i_intermediaryOrder":1},{"auditId":"924","i_intermediaryType":2,"i_intermediaryId":"20008","i_person":[{"i_p_personName":"胡咏华","i_p_jobType":31,"i_p_personId":"787537","i_p_jobTitle":"会计事务所负责人"},{"i_p_personName":"丁亭亭","i_p_jobType":34,"i_p_personId":"787540","i_p_jobTitle":"签字会计师C（或有）"},{"i_p_personName":"岑溯鹏","i_p_jobType":33,"i_p_personId":"787539","i_p_jobTitle":"签字会计师B"},{"i_p_personName":"牛良文","i_p_jobType":32,"i_p_personId":"787538","i_p_jobTitle":"签字会计师A"}],"i_intermediaryAbbrName":"大信","i_intermediaryName":"大信会计师事务所（特殊普通合伙）","i_intermediaryOrder":1},{"auditId":"924","i_intermediaryType":3,"i_intermediaryId":"10006","i_person":[{"i_p_personName":"魏海涛","i_p_jobType":42,"i_p_personId":"787543","i_p_jobTitle":"签字律师A"},{"i_p_personName":"姚启明","i_p_jobType":43,"i_p_personId":"787544","i_p_jobTitle":"签字律师B"},{"i_p_personName":"张学兵","i_p_jobType":41,"i_p_personId":"787542","i_p_jobTitle":"律师事务所负责人"},{"i_p_personName":"丁文昊","i_p_jobType":44,"i_p_personId":"787545","i_p_jobTitle":"签字律师C（或有）"}],"i_intermediaryAbbrName":"北京市中伦","i_intermediaryName":"北京市中伦律师事务所","i_intermediaryOrder":1}],"collectType":1,"stockIssuer":[{"s_personName":"叶逢光","auditId":"924","s_stockIssueId":"924","s_personId":"787515","s_issueCompanyFullName":"北京英诺特生物技术股份有限公司","s_csrcCode":"C27","s_jobTitle":"董事长","s_issueCompanyAbbrName":"英诺特","s_csrcCodeDesc":"医药制造业","s_province":"北京","s_areaNameDesc":"丰台区","s_companyCode":""},{"s_personName":"张秀杰","auditId":"924","s_stockIssueId":"924","s_personId":"787516","s_issueCompanyFullName":"北京英诺特生物技术股份有限公司","s_csrcCode":"C27","s_jobTitle":"总经理","s_issueCompanyAbbrName":"英诺特","s_csrcCodeDesc":"医药制造业","s_province":"北京","s_areaNameDesc":"丰台区","s_companyCode":""},{"s_personName":"陈富康","auditId":"924","s_stockIssueId":"924","s_personId":"787517","s_issueCompanyFullName":"北京英诺特生物技术股份有限公司","s_csrcCode":"C27","s_jobTitle":"董秘","s_issueCompanyAbbrName":"英诺特","s_csrcCodeDesc":"医药制造业","s_province":"北京","s_areaNameDesc":"丰台区","s_companyCode":""},{"s_personName":"","auditId":"924","s_stockIssueId":"924","s_personId":"787518","s_issueCompanyFullName":"北京英诺特生物技术股份有限公司","s_csrcCode":"C27","s_jobTitle":"其他","s_issueCompanyAbbrName":"英诺特","s_csrcCodeDesc":"医药制造业","s_province":"北京","s_areaNameDesc":"丰台区","s_companyCode":""}],"createTime":"20210607144024","auditApplyDate":"20210616165743","issueAmount":"","commitiResult":"","issueMarketType":1,"OPERATION_SEQ":"17091ec3adcced13ef280fdbf3c35881"}],"endDate":null,"endPage":null,"objectResult":null,"pageCount":1,"pageNo":1,"pageSize":20,"searchDate":null,"sort":null,"startDate":null,"total":1},"pageNo":null,"pageSize":null,"queryDate":"","result":[{"updateDate":"20211230191852","planIssueCapital":12.09,"suspendStatus":"","wenHao":"","stockAuditName":"北京英诺特生物技术股份有限公司","currStatus":2,"stockAuditNum":"924","registeResult":"","intermediary":[{"auditId":"924","i_intermediaryType":1,"i_intermediaryId":"0_1047","i_person":[{"i_p_personName":"董炜源","i_p_jobType":24,"i_p_personId":"787524","i_p_jobTitle":"项目协办人"},{"i_p_personName":"郑明欣","i_p_jobType":23,"i_p_personId":"787523","i_p_jobTitle":"保荐代表人B"},{"i_p_personName":"丁明明","i_p_jobType":22,"i_p_personId":"787522","i_p_jobTitle":"保荐代表人A"},{"i_p_personName":"唐松华","i_p_jobType":21,"i_p_personId":"787519","i_p_jobTitle":"保荐业务负责人"}],"i_intermediaryAbbrName":"华泰联合证券","i_intermediaryName":"华泰联合证券有限责任公司","i_intermediaryOrder":1},{"auditId":"924","i_intermediaryType":2,"i_intermediaryId":"20008","i_person":[{"i_p_personName":"胡咏华","i_p_jobType":31,"i_p_personId":"787537","i_p_jobTitle":"会计事务所负责人"},{"i_p_personName":"丁亭亭","i_p_jobType":34,"i_p_personId":"787540","i_p_jobTitle":"签字会计师C（或有）"},{"i_p_personName":"岑溯鹏","i_p_jobType":33,"i_p_personId":"787539","i_p_jobTitle":"签字会计师B"},{"i_p_personName":"牛良文","i_p_jobType":32,"i_p_personId":"787538","i_p_jobTitle":"签字会计师A"}],"i_intermediaryAbbrName":"大信","i_intermediaryName":"大信会计师事务所（特殊普通合伙）","i_intermediaryOrder":1},{"auditId":"924","i_intermediaryType":3,"i_intermediaryId":"10006","i_person":[{"i_p_personName":"魏海涛","i_p_jobType":42,"i_p_personId":"787543","i_p_jobTitle":"签字律师A"},{"i_p_personName":"姚启明","i_p_jobType":43,"i_p_personId":"787544","i_p_jobTitle":"签字律师B"},{"i_p_personName":"张学兵","i_p_jobType":41,"i_p_personId":"787542","i_p_jobTitle":"律师事务所负责人"},{"i_p_personName":"丁文昊","i_p_jobType":44,"i_p_personId":"787545","i_p_jobTitle":"签字律师C（或有）"}],"i_intermediaryAbbrName":"北京市中伦","i_intermediaryName":"北京市中伦律师事务所","i_intermediaryOrder":1}],"collectType":1,"stockIssuer":[{"s_personName":"叶逢光","auditId":"924","s_stockIssueId":"924","s_personId":"787515","s_issueCompanyFullName":"北京英诺特生物技术股份有限公司","s_csrcCode":"C27","s_jobTitle":"董事长","s_issueCompanyAbbrName":"英诺特","s_csrcCodeDesc":"医药制造业","s_province":"北京","s_areaNameDesc":"丰台区","s_companyCode":""},{"s_personName":"张秀杰","auditId":"924","s_stockIssueId":"924","s_personId":"787516","s_issueCompanyFullName":"北京英诺特生物技术股份有限公司","s_csrcCode":"C27","s_jobTitle":"总经理","s_issueCompanyAbbrName":"英诺特","s_csrcCodeDesc":"医药制造业","s_province":"北京","s_areaNameDesc":"丰台区","s_companyCode":""},{"s_personName":"陈富康","auditId":"924","s_stockIssueId":"924","s_personId":"787517","s_issueCompanyFullName":"北京英诺特生物技术股份有限公司","s_csrcCode":"C27","s_jobTitle":"董秘","s_issueCompanyAbbrName":"英诺特","s_csrcCodeDesc":"医药制造业","s_province":"北京","s_areaNameDesc":"丰台区","s_companyCode":""},{"s_personName":"","auditId":"924","s_stockIssueId":"924","s_personId":"787518","s_issueCompanyFullName":"北京英诺特生物技术股份有限公司","s_csrcCode":"C27","s_jobTitle":"其他","s_issueCompanyAbbrName":"英诺特","s_csrcCodeDesc":"医药制造业","s_province":"北京","s_areaNameDesc":"丰台区","s_companyCode":""}],"createTime":"20210607144024","auditApplyDate":"20210616165743","issueAmount":"","commitiResult":"","issueMarketType":1,"OPERATION_SEQ":"17091ec3adcced13ef280fdbf3c35881"}],"securityCode":"","statistics":[{"num":31,"status":"1"},{"num":61,"status":"2"},{"num":405,"status":"5"},{"num":48,"status":"4"},{"num":145,"status":"8"},{"num":7,"status":"7"},{"num":12,"status":"3"},{"num":2,"status":"3-6"},{"num":10,"status":"3-1"},{"num":1,"status":"5-2"},{"num":390,"status":"5-1"},{"num":14,"status":"5-3"},{"num":6,"status":"7-1"},{"num":1,"status":"7-2"}],"texts":null,"type":"","validateCode":""})"#,
+            r#"jsonpCallback42305({"actionErrors":[],"actionMessages":[],"downloadFileName":null,"execlStream":null,"fieldErrors":{},"fileId":null,"isPagination":"true","jsonCallBack":"jsonpCallback42305","locale":"en_US","mergeSize":null,"mergeType":null,"pageHelp":{"beginPage":1,"cacheSize":1,"data":[{"updateDate":"20211130120921","planIssueCapital":2.7,"suspendStatus":"","wenHao":"","stockAuditName":"广东雅达电子股份有限公司","currStatus":8,"stockAuditNum":"972","registeResult":"","intermediary":[{"auditId":"972","i_intermediaryType":1,"i_intermediaryId":"0_1021","i_person":[{"i_p_personName":"杨雄辉","i_p_jobType":24,"i_p_personId":"732115","i_p_jobTitle":"项目协办人"},{"i_p_personName":"谭星","i_p_jobType":23,"i_p_personId":"732114","i_p_jobTitle":"保荐代表人B"},{"i_p_personName":"文斌","i_p_jobType":22,"i_p_personId":"732113","i_p_jobTitle":"保荐代表人A"},{"i_p_personName":"郜泽民","i_p_jobType":21,"i_p_personId":"732110","i_p_jobTitle":"保荐业务负责�..."#,
         );
         let company_info = CompanyInfo::try_from(raw_data);
         println!("{:#?}", company_info);
@@ -803,8 +822,11 @@ mod tests {
 
     #[test]
     fn test_info_disclosure_try_from_json() {
+        // let raw_data = String::from(
+        //     r#"jsonpCallback99435173({"actionErrors":[],"actionMessages":[],"fieldErrors":{},"isPagination":"false","jsonCallBack":"jsonpCallback99435173","locale":"en_US","pageHelp":{"beginPage":1,"cacheSize":1,"data":[{"fileUpdateTime":"20220107174000","filePath":"\/information\/c\/202201\/d078b75188094a5d9848073e3099dc97.pdf","publishDate":"2022-01-07","fileLastVersion":1,"stockAuditNum":"1037","auditItemId":"506c1fe4277c4b39aa750b4d3a8fa22b","filename":"d078b75188094a5d9848073e3099dc97.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":638900,"StockType":1,"fileTitle":"8-3 补充法律意见书","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"84021742","OPERATION_SEQ":"c9339ecf660cc1553dcbb668e0f10277"},{"fileUpdateTime":"20220107174000","filePath":"\/information\/c\/202201\/6550a785ae9f4c01bcad74d8ed07e339.pdf","publishDate":"2022-01-07","fileLastVersion":1,"stockAuditNum":"1037","auditItemId":"ab6fe7cdbc194ff985b3f3d7d687f1c5","filename":"6550a785ae9f4c01bcad74d8ed07e339.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":3188045,"StockType":1,"fileTitle":"8-2 会计师关于德邦科技科创板上市首轮问询回复意见","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"84021741","OPERATION_SEQ":"c9339ecf660cc1553dcbb668e0f10277"},{"fileUpdateTime":"20220107174000","filePath":"\/information\/c\/202201\/99858ffdaa4a45c18028374b840b135b.pdf","publishDate":"2022-01-07","fileLastVersion":1,"stockAuditNum":"1037","auditItemId":"3df19f054fe749ecb5ddd1372b26884e","filename":"99858ffdaa4a45c18028374b840b135b.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":3114905,"StockType":1,"fileTitle":"8-1 发行人及保荐机构关于审核问询函的回复(豁免版)","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"84021740","OPERATION_SEQ":"c9339ecf660cc1553dcbb668e0f10277"},{"fileUpdateTime":"20211012170001","filePath":"\/information\/c\/202110\/dbdbfa8875ef40298638549ab1524817.pdf","publishDate":"2021-10-12","fileLastVersion":2,"stockAuditNum":"1037","auditItemId":"c89859bf2b3a11ec9f2608f1ea8a847f","filename":"dbdbfa8875ef40298638549ab1524817.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":11888035,"StockType":1,"fileTitle":"永拓会计师事务所（特殊普通合伙）关于烟台德邦科技股份有限公司首次公开发行股票并在科创板上市的财务报表及审计报告","auditStatus":1,"fileVersion":1,"fileType":32,"MarketType":1,"fileId":"209049","OPERATION_SEQ":"2d2d8d56e0984f7ab38c008edcf491d4"},{"fileUpdateTime":"20211012170001","filePath":"\/information\/c\/202110\/e5b671d8cec14bf3883e8abd45fc3a96.pdf","publishDate":"2021-10-12","fileLastVersion":2,"stockAuditNum":"1037","auditItemId":"c89859bf2b3a11ec9f2608f1ea8a847f","filename":"e5b671d8cec14bf3883e8abd45fc3a96.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":736749,"StockType":1,"fileTitle":"东方证券承销保荐有限公司关于烟台德邦科技股份有限公司首次公开发行股票并在科创板上市的上市保荐书","auditStatus":1,"fileVersion":1,"fileType":37,"MarketType":1,"fileId":"209043","OPERATION_SEQ":"2d2d8d56e0984f7ab38c008edcf491d4"},{"fileUpdateTime":"20211012170001","filePath":"\/information\/c\/202110\/666b8b084d1e4720bc90aa19a40fab5a.pdf","publishDate":"2021-10-12","fileLastVersion":2,"stockAuditNum":"1037","auditItemId":"c89859bf2b3a11ec9f2608f1ea8a847f","filename":"666b8b084d1e4720bc90aa19a40fab5a.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":703086,"StockType":1,"fileTitle":"东方证券承销保荐有限公司关于烟台德邦科技股份有限公司首次公开发行股票并在科创板上市的发行保荐书","auditStatus":1,"fileVersion":1,"fileType":36,"MarketType":1,"fileId":"209041","OPERATION_SEQ":"2d2d8d56e0984f7ab38c008edcf491d4"}],"endDate":null,"endPage":null,"objectResult":null,"pageCount":1,"pageNo":1,"pageSize":6,"searchDate":null,"sort":null,"startDate":null,"total":6},"pageNo":null,"pageSize":null,"queryDate":"","result":[{"fileUpdateTime":"20220107174000","filePath":"\/information\/c\/202201\/d078b75188094a5d9848073e3099dc97.pdf","publishDate":"2022-01-07","fileLastVersion":1,"stockAuditNum":"1037","auditItemId":"506c1fe4277c4b39aa750b4d3a8fa22b","filename":"d078b75188094a5d9848073e3099dc97.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":638900,"StockType":1,"fileTitle":"8-3 补充法律意见书","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"84021742","OPERATION_SEQ":"c9339ecf660cc1553dcbb668e0f10277"},{"fileUpdateTime":"20220107174000","filePath":"\/information\/c\/202201\/6550a785ae9f4c01bcad74d8ed07e339.pdf","publishDate":"2022-01-07","fileLastVersion":1,"stockAuditNum":"1037","auditItemId":"ab6fe7cdbc194ff985b3f3d7d687f1c5","filename":"6550a785ae9f4c01bcad74d8ed07e339.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":3188045,"StockType":1,"fileTitle":"8-2 会计师关于德邦科技科创板上市首轮问询回复意见","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"84021741","OPERATION_SEQ":"c9339ecf660cc1553dcbb668e0f10277"},{"fileUpdateTime":"20220107174000","filePath":"\/information\/c\/202201\/99858ffdaa4a45c18028374b840b135b.pdf","publishDate":"2022-01-07","fileLastVersion":1,"stockAuditNum":"1037","auditItemId":"3df19f054fe749ecb5ddd1372b26884e","filename":"99858ffdaa4a45c18028374b840b135b.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":3114905,"StockType":1,"fileTitle":"8-1 发行人及保荐机构关于审核问询函的回复(豁免版)","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"84021740","OPERATION_SEQ":"c9339ecf660cc1553dcbb668e0f10277"},{"fileUpdateTime":"20211012170001","filePath":"\/information\/c\/202110\/dbdbfa8875ef40298638549ab1524817.pdf","publishDate":"2021-10-12","fileLastVersion":2,"stockAuditNum":"1037","auditItemId":"c89859bf2b3a11ec9f2608f1ea8a847f","filename":"dbdbfa8875ef40298638549ab1524817.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":11888035,"StockType":1,"fileTitle":"永拓会计师事务所（特殊普通合伙）关于烟台德邦科技股份有限公司首次公开发行股票并在科创板上市的财务报表及审计报告","auditStatus":1,"fileVersion":1,"fileType":32,"MarketType":1,"fileId":"209049","OPERATION_SEQ":"2d2d8d56e0984f7ab38c008edcf491d4"},{"fileUpdateTime":"20211012170001","filePath":"\/information\/c\/202110\/e5b671d8cec14bf3883e8abd45fc3a96.pdf","publishDate":"2021-10-12","fileLastVersion":2,"stockAuditNum":"1037","auditItemId":"c89859bf2b3a11ec9f2608f1ea8a847f","filename":"e5b671d8cec14bf3883e8abd45fc3a96.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":736749,"StockType":1,"fileTitle":"东方证券承销保荐有限公司关于烟台德邦科技股份有限公司首次公开发行股票并在科创板上市的上市保荐书","auditStatus":1,"fileVersion":1,"fileType":37,"MarketType":1,"fileId":"209043","OPERATION_SEQ":"2d2d8d56e0984f7ab38c008edcf491d4"},{"fileUpdateTime":"20211012170001","filePath":"\/information\/c\/202110\/666b8b084d1e4720bc90aa19a40fab5a.pdf","publishDate":"2021-10-12","fileLastVersion":2,"stockAuditNum":"1037","auditItemId":"c89859bf2b3a11ec9f2608f1ea8a847f","filename":"666b8b084d1e4720bc90aa19a40fab5a.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":703086,"StockType":1,"fileTitle":"东方证券承销保荐有限公司关于烟台德邦科技股份有限公司首次公开发行股票并在科创板上市的发行保荐书","auditStatus":1,"fileVersion":1,"fileType":36,"MarketType":1,"fileId":"209041","OPERATION_SEQ":"2d2d8d56e0984f7ab38c008edcf491d4"}],"securityCode":"","texts":null,"type":"","validateCode":""})"#,
+        // );
         let raw_data = String::from(
-            r#"jsonpCallback99435173({"actionErrors":[],"actionMessages":[],"fieldErrors":{},"isPagination":"false","jsonCallBack":"jsonpCallback99435173","locale":"en_US","pageHelp":{"beginPage":1,"cacheSize":1,"data":[{"fileUpdateTime":"20220107174000","filePath":"\/information\/c\/202201\/d078b75188094a5d9848073e3099dc97.pdf","publishDate":"2022-01-07","fileLastVersion":1,"stockAuditNum":"1037","auditItemId":"506c1fe4277c4b39aa750b4d3a8fa22b","filename":"d078b75188094a5d9848073e3099dc97.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":638900,"StockType":1,"fileTitle":"8-3 补充法律意见书","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"84021742","OPERATION_SEQ":"c9339ecf660cc1553dcbb668e0f10277"},{"fileUpdateTime":"20220107174000","filePath":"\/information\/c\/202201\/6550a785ae9f4c01bcad74d8ed07e339.pdf","publishDate":"2022-01-07","fileLastVersion":1,"stockAuditNum":"1037","auditItemId":"ab6fe7cdbc194ff985b3f3d7d687f1c5","filename":"6550a785ae9f4c01bcad74d8ed07e339.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":3188045,"StockType":1,"fileTitle":"8-2 会计师关于德邦科技科创板上市首轮问询回复意见","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"84021741","OPERATION_SEQ":"c9339ecf660cc1553dcbb668e0f10277"},{"fileUpdateTime":"20220107174000","filePath":"\/information\/c\/202201\/99858ffdaa4a45c18028374b840b135b.pdf","publishDate":"2022-01-07","fileLastVersion":1,"stockAuditNum":"1037","auditItemId":"3df19f054fe749ecb5ddd1372b26884e","filename":"99858ffdaa4a45c18028374b840b135b.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":3114905,"StockType":1,"fileTitle":"8-1 发行人及保荐机构关于审核问询函的回复(豁免版)","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"84021740","OPERATION_SEQ":"c9339ecf660cc1553dcbb668e0f10277"},{"fileUpdateTime":"20211012170001","filePath":"\/information\/c\/202110\/dbdbfa8875ef40298638549ab1524817.pdf","publishDate":"2021-10-12","fileLastVersion":2,"stockAuditNum":"1037","auditItemId":"c89859bf2b3a11ec9f2608f1ea8a847f","filename":"dbdbfa8875ef40298638549ab1524817.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":11888035,"StockType":1,"fileTitle":"永拓会计师事务所（特殊普通合伙）关于烟台德邦科技股份有限公司首次公开发行股票并在科创板上市的财务报表及审计报告","auditStatus":1,"fileVersion":1,"fileType":32,"MarketType":1,"fileId":"209049","OPERATION_SEQ":"2d2d8d56e0984f7ab38c008edcf491d4"},{"fileUpdateTime":"20211012170001","filePath":"\/information\/c\/202110\/e5b671d8cec14bf3883e8abd45fc3a96.pdf","publishDate":"2021-10-12","fileLastVersion":2,"stockAuditNum":"1037","auditItemId":"c89859bf2b3a11ec9f2608f1ea8a847f","filename":"e5b671d8cec14bf3883e8abd45fc3a96.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":736749,"StockType":1,"fileTitle":"东方证券承销保荐有限公司关于烟台德邦科技股份有限公司首次公开发行股票并在科创板上市的上市保荐书","auditStatus":1,"fileVersion":1,"fileType":37,"MarketType":1,"fileId":"209043","OPERATION_SEQ":"2d2d8d56e0984f7ab38c008edcf491d4"},{"fileUpdateTime":"20211012170001","filePath":"\/information\/c\/202110\/666b8b084d1e4720bc90aa19a40fab5a.pdf","publishDate":"2021-10-12","fileLastVersion":2,"stockAuditNum":"1037","auditItemId":"c89859bf2b3a11ec9f2608f1ea8a847f","filename":"666b8b084d1e4720bc90aa19a40fab5a.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":703086,"StockType":1,"fileTitle":"东方证券承销保荐有限公司关于烟台德邦科技股份有限公司首次公开发行股票并在科创板上市的发行保荐书","auditStatus":1,"fileVersion":1,"fileType":36,"MarketType":1,"fileId":"209041","OPERATION_SEQ":"2d2d8d56e0984f7ab38c008edcf491d4"}],"endDate":null,"endPage":null,"objectResult":null,"pageCount":1,"pageNo":1,"pageSize":6,"searchDate":null,"sort":null,"startDate":null,"total":6},"pageNo":null,"pageSize":null,"queryDate":"","result":[{"fileUpdateTime":"20220107174000","filePath":"\/information\/c\/202201\/d078b75188094a5d9848073e3099dc97.pdf","publishDate":"2022-01-07","fileLastVersion":1,"stockAuditNum":"1037","auditItemId":"506c1fe4277c4b39aa750b4d3a8fa22b","filename":"d078b75188094a5d9848073e3099dc97.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":638900,"StockType":1,"fileTitle":"8-3 补充法律意见书","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"84021742","OPERATION_SEQ":"c9339ecf660cc1553dcbb668e0f10277"},{"fileUpdateTime":"20220107174000","filePath":"\/information\/c\/202201\/6550a785ae9f4c01bcad74d8ed07e339.pdf","publishDate":"2022-01-07","fileLastVersion":1,"stockAuditNum":"1037","auditItemId":"ab6fe7cdbc194ff985b3f3d7d687f1c5","filename":"6550a785ae9f4c01bcad74d8ed07e339.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":3188045,"StockType":1,"fileTitle":"8-2 会计师关于德邦科技科创板上市首轮问询回复意见","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"84021741","OPERATION_SEQ":"c9339ecf660cc1553dcbb668e0f10277"},{"fileUpdateTime":"20220107174000","filePath":"\/information\/c\/202201\/99858ffdaa4a45c18028374b840b135b.pdf","publishDate":"2022-01-07","fileLastVersion":1,"stockAuditNum":"1037","auditItemId":"3df19f054fe749ecb5ddd1372b26884e","filename":"99858ffdaa4a45c18028374b840b135b.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":3114905,"StockType":1,"fileTitle":"8-1 发行人及保荐机构关于审核问询函的回复(豁免版)","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"84021740","OPERATION_SEQ":"c9339ecf660cc1553dcbb668e0f10277"},{"fileUpdateTime":"20211012170001","filePath":"\/information\/c\/202110\/dbdbfa8875ef40298638549ab1524817.pdf","publishDate":"2021-10-12","fileLastVersion":2,"stockAuditNum":"1037","auditItemId":"c89859bf2b3a11ec9f2608f1ea8a847f","filename":"dbdbfa8875ef40298638549ab1524817.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":11888035,"StockType":1,"fileTitle":"永拓会计师事务所（特殊普通合伙）关于烟台德邦科技股份有限公司首次公开发行股票并在科创板上市的财务报表及审计报告","auditStatus":1,"fileVersion":1,"fileType":32,"MarketType":1,"fileId":"209049","OPERATION_SEQ":"2d2d8d56e0984f7ab38c008edcf491d4"},{"fileUpdateTime":"20211012170001","filePath":"\/information\/c\/202110\/e5b671d8cec14bf3883e8abd45fc3a96.pdf","publishDate":"2021-10-12","fileLastVersion":2,"stockAuditNum":"1037","auditItemId":"c89859bf2b3a11ec9f2608f1ea8a847f","filename":"e5b671d8cec14bf3883e8abd45fc3a96.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":736749,"StockType":1,"fileTitle":"东方证券承销保荐有限公司关于烟台德邦科技股份有限公司首次公开发行股票并在科创板上市的上市保荐书","auditStatus":1,"fileVersion":1,"fileType":37,"MarketType":1,"fileId":"209043","OPERATION_SEQ":"2d2d8d56e0984f7ab38c008edcf491d4"},{"fileUpdateTime":"20211012170001","filePath":"\/information\/c\/202110\/666b8b084d1e4720bc90aa19a40fab5a.pdf","publishDate":"2021-10-12","fileLastVersion":2,"stockAuditNum":"1037","auditItemId":"c89859bf2b3a11ec9f2608f1ea8a847f","filename":"666b8b084d1e4720bc90aa19a40fab5a.pdf","companyFullName":"烟台德邦科技股份有限公司","fileSize":703086,"StockType":1,"fileTitle":"东方证券承销保荐有限公司关于烟台德邦科技股份有限公司首次公开发行股票并在科创板上市的发行保荐书","auditStatus":1,"fileVersion":1,"fileType":36,"MarketType":1,"fileId":"209041","OPERATION_SEQ":"2d2d8d56e0984f7ab38c008edcf491d4"}],"securityCode":"","texts":null,"type":"","validateCode":""})"#,
+            r#"jsonpCallback99435173({"actionErrors":[],"actionMessages":[],"fieldErrors":{},"isPagination":"false","jsonCallBack":"jsonpCallback99435173","locale":"en_US","pageHelp":{"beginPage":1,"cacheSize":1,"data":[{"fileUpdateTime":"20210810173001","filePath":"\/information\/c\/202108\/599c224d1d56485ab2594cbb7880d1fb.pdf","publishDate":"2021-07-06","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"893f416ff9bd11eb9f2608f1ea8a847f","filename":"599c224d1d56485ab2594cbb7880d1fb.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":10172385,"StockType":1,"fileTitle":"江苏宏微科技股份有限公司科创板首次公开发行股票招股说明书（注册稿）","auditStatus":5,"fileVersion":4,"fileType":30,"MarketType":1,"fileId":"201168","OPERATION_SEQ":"c27f396abc045c2215d6889f543b109a"},{"fileUpdateTime":"20210810173001","filePath":"\/information\/c\/202108\/cf837f99004d446aa0fb2ad74eda44a1.pdf","publishDate":"2021-07-06","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"893f416ff9bd11eb9f2608f1ea8a847f","filename":"cf837f99004d446aa0fb2ad74eda44a1.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":954978,"StockType":1,"fileTitle":"民生证券股份有限公司关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的发行保荐书","auditStatus":5,"fileVersion":4,"fileType":36,"MarketType":1,"fileId":"201167","OPERATION_SEQ":"c27f396abc045c2215d6889f543b109a"},{"fileUpdateTime":"20210708170000","filePath":"\/information\/c\/202107\/ff98a241cddb451b942291055c3428e7.pdf","publishDate":"2021-07-06","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"a6b4d162c5571ca32a580ab2de8b1034","filename":"ff98a241cddb451b942291055c3428e7.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":383081,"StockType":1,"fileTitle":"关于同意江苏宏微科技股份有限公司首次公开发行股票注册的批复","auditStatus":5,"fileVersion":4,"fileType":35,"MarketType":1,"fileId":"197008a","OPERATION_SEQ":"b845d9aeac87eef43cd894d28daa8c19"},{"fileUpdateTime":"20210706170001","filePath":"\/information\/c\/202107\/72e4fcaa40c441068b5f2a13234d4fa0.pdf","publishDate":"2021-07-06","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"8bc41b27de3811eb9f2608f1ea8a847f","filename":"72e4fcaa40c441068b5f2a13234d4fa0.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":10368026,"StockType":1,"fileTitle":"江苏宏微科技股份有限公司科创板首次公开发行股票招股说明书（注册稿）","auditStatus":4,"fileVersion":3,"fileType":30,"MarketType":1,"fileId":"196724","OPERATION_SEQ":"6ee357caad0c12f7f6d354f223f1052c"},{"fileUpdateTime":"20210706170000","filePath":"\/information\/c\/202107\/788223f9815047c083d36a9e6eb1e31f.pdf","publishDate":"2021-07-06","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"f8dafdd4f0754b72a3bdae8fbfca78b9","filename":"788223f9815047c083d36a9e6eb1e31f.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":490968,"StockType":1,"fileTitle":"8-3 补充法律意见书（五）","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"82213708","OPERATION_SEQ":"b6e5c7a1257596dfe158631a24755b81"},{"fileUpdateTime":"20210706170000","filePath":"\/information\/c\/202107\/9cf6cdf4ebef42a9ad0d8bdc65001bd9.pdf","publishDate":"2021-07-06","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"cf14dff1bf9e43d8832469ed008ef597","filename":"9cf6cdf4ebef42a9ad0d8bdc65001bd9.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":1661881,"StockType":1,"fileTitle":"8-1 发行人及保荐机构关于发行注册环节反馈意见落实函的回复","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"82213707","OPERATION_SEQ":"b6e5c7a1257596dfe158631a24755b81"},{"fileUpdateTime":"20210706170000","filePath":"\/information\/c\/202107\/2ee8e7c97fcf4d8989f742ab2751388e.pdf","publishDate":"2021-07-06","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"7c705ffe18944d379273c162a31a2709","filename":"2ee8e7c97fcf4d8989f742ab2751388e.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":1002971,"StockType":1,"fileTitle":"8-2 会计师关于发行注册环节反馈意见落实函的回复","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"82213706","OPERATION_SEQ":"b6e5c7a1257596dfe158631a24755b81"},{"fileUpdateTime":"20210602193001","filePath":"\/information\/c\/202106\/f2e332223b0048c8a2131eb8350fd42d.pdf","publishDate":"2021-06-02","fileLastVersion":2,"stockAuditNum":"810","auditItemId":"de365d91c39511eb9f2608f1ea8a847f","filename":"f2e332223b0048c8a2131eb8350fd42d.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":6487234,"StockType":1,"fileTitle":"北京市环球律师事务所关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的法律意见书","auditStatus":4,"fileVersion":3,"fileType":33,"MarketType":1,"fileId":"186761","OPERATION_SEQ":"1d877dcb53963b5139caadee89164dd7"},{"fileUpdateTime":"20210602193001","filePath":"\/information\/c\/202106\/247a03c0dd7947a288f1cc7d3d5b3c5c.pdf","publishDate":"2021-06-02","fileLastVersion":2,"stockAuditNum":"810","auditItemId":"de365d91c39511eb9f2608f1ea8a847f","filename":"247a03c0dd7947a288f1cc7d3d5b3c5c.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":9016613,"StockType":1,"fileTitle":"天衡会计师事务所（特殊普通合伙）关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的财务报表及审计报告","auditStatus":4,"fileVersion":3,"fileType":32,"MarketType":1,"fileId":"186760","OPERATION_SEQ":"1d877dcb53963b5139caadee89164dd7"},{"fileUpdateTime":"20210602193001","filePath":"\/information\/c\/202106\/737af05aa1e74ec6b9f11570aef55e4a.pdf","publishDate":"2021-06-02","fileLastVersion":2,"stockAuditNum":"810","auditItemId":"de365d91c39511eb9f2608f1ea8a847f","filename":"737af05aa1e74ec6b9f11570aef55e4a.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":1119016,"StockType":1,"fileTitle":"民生证券股份有限公司关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的上市保荐书","auditStatus":4,"fileVersion":3,"fileType":37,"MarketType":1,"fileId":"186759","OPERATION_SEQ":"1d877dcb53963b5139caadee89164dd7"},{"fileUpdateTime":"20210602193001","filePath":"\/information\/c\/202106\/d436966c9cab4bb4b73761dacc381eed.pdf","publishDate":"2021-06-02","fileLastVersion":2,"stockAuditNum":"810","auditItemId":"de365d91c39511eb9f2608f1ea8a847f","filename":"d436966c9cab4bb4b73761dacc381eed.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":980222,"StockType":1,"fileTitle":"民生证券股份有限公司关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的发行保荐书","auditStatus":4,"fileVersion":3,"fileType":36,"MarketType":1,"fileId":"186758","OPERATION_SEQ":"1d877dcb53963b5139caadee89164dd7"},{"fileUpdateTime":"20210602193001","filePath":"\/information\/c\/202106\/65118a0294ec413cad229b644839c93d.pdf","publishDate":"2021-06-02","fileLastVersion":2,"stockAuditNum":"810","auditItemId":"de365d91c39511eb9f2608f1ea8a847f","filename":"65118a0294ec413cad229b644839c93d.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":10489719,"StockType":1,"fileTitle":"江苏宏微科技股份有限公司科创板首次公开发行股票招股说明书（注册稿）","auditStatus":4,"fileVersion":3,"fileType":30,"MarketType":1,"fileId":"186757","OPERATION_SEQ":"1d877dcb53963b5139caadee89164dd7"},{"fileUpdateTime":"20210525170002","filePath":"\/information\/c\/202105\/c96ebfbe2a7b4aa3b5f4e1ab86e7cd49.pdf","publishDate":"2021-05-25","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"7e30e1b0497c44f4961c4a39681a8b03","filename":"c96ebfbe2a7b4aa3b5f4e1ab86e7cd49.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":726295,"StockType":1,"fileTitle":"8-2 补充法律意见书（四）","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"81756169","OPERATION_SEQ":"5f835f570a4192324e601c45b5fa0f93"},{"fileUpdateTime":"20210525170002","filePath":"\/information\/c\/202105\/15f499bdaeec4f689b60a30180e8aa79.pdf","publishDate":"2021-05-25","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"1aefe06cab3e4816a2724e05e391e057","filename":"15f499bdaeec4f689b60a30180e8aa79.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":1096128,"StockType":1,"fileTitle":"8-1 发行人及保荐机构关于科创板上市委会议意见落实函的回复","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"81756168","OPERATION_SEQ":"5f835f570a4192324e601c45b5fa0f93"},{"fileUpdateTime":"20210511170002","filePath":"\/information\/c\/202105\/cd82936bed7e4f1c830fd68aad4c48ed.pdf","publishDate":"2021-05-11","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"bc9bab4839d54bb69ace30a3ed58ab73","filename":"cd82936bed7e4f1c830fd68aad4c48ed.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":1820723,"StockType":1,"fileTitle":"8-1 发行人及保荐机构关于审核中心意见落实函的回复","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"81566543","OPERATION_SEQ":"599b855f2b2e3bbdfce69e72f02c64f5"},{"fileUpdateTime":"20210511170002","filePath":"\/information\/c\/202105\/f1027d54a4f343588ae935e9adf53607.pdf","publishDate":"2021-05-11","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"d4bd48cabc254343abf0291edb625fb5","filename":"f1027d54a4f343588ae935e9adf53607.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":374621,"StockType":1,"fileTitle":"8-2 会计师关于审核中心意见落实函的回复意见","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"81566542","OPERATION_SEQ":"599b855f2b2e3bbdfce69e72f02c64f5"},{"fileUpdateTime":"20210511170002","filePath":"\/information\/c\/202105\/bb2ccbdaf64242fba3c63472874a90a3.pdf","publishDate":"2021-05-11","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"45661c91b23711eb9f2608f1ea8a847f","filename":"bb2ccbdaf64242fba3c63472874a90a3.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":1045163,"StockType":1,"fileTitle":"民生证券股份有限公司关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的发行保荐书","auditStatus":2,"fileVersion":2,"fileType":36,"MarketType":1,"fileId":"183301","OPERATION_SEQ":"599b855f2b2e3bbdfce69e72f02c64f5"},{"fileUpdateTime":"20210511170002","filePath":"\/information\/c\/202105\/15b94a71682d465b837f05dcc35c1610.pdf","publishDate":"2021-05-11","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"45661c91b23711eb9f2608f1ea8a847f","filename":"15b94a71682d465b837f05dcc35c1610.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":1187910,"StockType":1,"fileTitle":"民生证券股份有限公司关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的上市保荐书","auditStatus":2,"fileVersion":2,"fileType":37,"MarketType":1,"fileId":"183300","OPERATION_SEQ":"599b855f2b2e3bbdfce69e72f02c64f5"},{"fileUpdateTime":"20210511170002","filePath":"\/information\/c\/202105\/3d514061b4be4cae9f087e803e85e98c.pdf","publishDate":"2021-05-11","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"45661c91b23711eb9f2608f1ea8a847f","filename":"3d514061b4be4cae9f087e803e85e98c.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":9067755,"StockType":1,"fileTitle":"天衡会计师事务所（特殊普通合伙）关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的财务报表及审计报告","auditStatus":2,"fileVersion":2,"fileType":32,"MarketType":1,"fileId":"183297","OPERATION_SEQ":"599b855f2b2e3bbdfce69e72f02c64f5"},{"fileUpdateTime":"20210511170002","filePath":"\/information\/c\/202105\/59bea2dc0ceb4e7c8dc0e9c5764e7143.pdf","publishDate":"2021-05-11","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"45661c91b23711eb9f2608f1ea8a847f","filename":"59bea2dc0ceb4e7c8dc0e9c5764e7143.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":6469060,"StockType":1,"fileTitle":"北京市环球律师事务所关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的法律意见书","auditStatus":2,"fileVersion":2,"fileType":33,"MarketType":1,"fileId":"183296","OPERATION_SEQ":"599b855f2b2e3bbdfce69e72f02c64f5"},{"fileUpdateTime":"20210511170002","filePath":"\/information\/c\/202105\/22013426b5d54b52a9261b962b7e5b93.pdf","publishDate":"2021-05-11","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"45661c91b23711eb9f2608f1ea8a847f","filename":"22013426b5d54b52a9261b962b7e5b93.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":10516113,"StockType":1,"fileTitle":"江苏宏微科技股份有限公司科创板首次公开发行股票招股说明书（上会稿）","auditStatus":2,"fileVersion":2,"fileType":30,"MarketType":1,"fileId":"183295","OPERATION_SEQ":"599b855f2b2e3bbdfce69e72f02c64f5"},{"fileUpdateTime":"20210430170000","filePath":"\/information\/c\/202104\/dea5d43fade44cc2943be9cdbbdc607e.pdf","publishDate":"2021-04-30","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"7040c835260c4b18b271a5d1dae69e08","filename":"dea5d43fade44cc2943be9cdbbdc607e.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":5064951,"StockType":1,"fileTitle":"8-1 发行人及保荐机构关于第二轮审核问询函的回复","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"81422143","OPERATION_SEQ":"2607738008ef082fb48cf33d489c254e"},{"fileUpdateTime":"20210430170000","filePath":"\/information\/c\/202104\/2ac632ac4ed94e018cc55c8bad02664f.pdf","publishDate":"2021-04-30","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"3ee737f8a72c450ab96c80e927e31008","filename":"2ac632ac4ed94e018cc55c8bad02664f.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":2555406,"StockType":1,"fileTitle":"8-2 申报会计师关于第二轮审核问询函的回复","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"81422142","OPERATION_SEQ":"2607738008ef082fb48cf33d489c254e"},{"fileUpdateTime":"20210430170000","filePath":"\/information\/c\/202104\/db38364be9b5450fbdd101d664b502dc.pdf","publishDate":"2021-04-30","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"f061b17593eb4fdfbd77e0c8dfd99972","filename":"db38364be9b5450fbdd101d664b502dc.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":1841288,"StockType":1,"fileTitle":"8-3 补充法律意见书（二）","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"81422141","OPERATION_SEQ":"2607738008ef082fb48cf33d489c254e"},{"fileUpdateTime":"20210322170002","filePath":"\/information\/c\/202103\/5dbf352865d9464389e829ff4af2472a.pdf","publishDate":"2021-03-22","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"aa3ee305e01c4b1fa40e11ac14a1a59a","filename":"5dbf352865d9464389e829ff4af2472a.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":5693871,"StockType":1,"fileTitle":"8-1 关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市申请文件的审核问询函的回复","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"80910221","OPERATION_SEQ":"e499a9282b779b0bf08ad04e2a70a683"},{"fileUpdateTime":"20210322170002","filePath":"\/information\/c\/202103\/62808134a1644a96a8b699f96bf78625.pdf","publishDate":"2021-03-22","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"9a532b5c385c4439bdb29362935d794c","filename":"62808134a1644a96a8b699f96bf78625.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":5134566,"StockType":1,"fileTitle":"8-2 申报会计师关于审核问询函的回复","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"80910220","OPERATION_SEQ":"e499a9282b779b0bf08ad04e2a70a683"},{"fileUpdateTime":"20210322170002","filePath":"\/information\/c\/202103\/42e557e5e8e14714b287eb038623519f.pdf","publishDate":"2021-03-22","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"fc9d7774c9c44cb793683f69a023ed51","filename":"42e557e5e8e14714b287eb038623519f.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":2265743,"StockType":1,"fileTitle":"8-3 补充法律意见书（一）","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"80910219","OPERATION_SEQ":"e499a9282b779b0bf08ad04e2a70a683"},{"fileUpdateTime":"20201222170002","filePath":"\/information\/c\/202012\/1b9b9bff9cff46969bda6645a66c7400.pdf","publishDate":"2020-12-22","fileLastVersion":2,"stockAuditNum":"810","auditItemId":"13e4eadf443411ebb0c708f1ea8a847f","filename":"1b9b9bff9cff46969bda6645a66c7400.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":988253,"StockType":1,"fileTitle":"北京市环球律师事务所关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的法律意见书","auditStatus":1,"fileVersion":1,"fileType":33,"MarketType":1,"fileId":"161406","OPERATION_SEQ":"e86334eb393c8e30c7899e78da9f9769"},{"fileUpdateTime":"20201222170002","filePath":"\/information\/c\/202012\/4066ca100a0a4d169fb37549704a7ff6.pdf","publishDate":"2020-12-22","fileLastVersion":2,"stockAuditNum":"810","auditItemId":"13e4eadf443411ebb0c708f1ea8a847f","filename":"4066ca100a0a4d169fb37549704a7ff6.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":8338127,"StockType":1,"fileTitle":"天衡会计师事务所（特殊普通合伙）关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的财务报表及审计报告","auditStatus":1,"fileVersion":1,"fileType":32,"MarketType":1,"fileId":"161402","OPERATION_SEQ":"e86334eb393c8e30c7899e78da9f9769"},{"fileUpdateTime":"20201222170002","filePath":"\/information\/c\/202012\/94633c4e1a35498fa1910665b2c57af4.pdf","publishDate":"2020-12-22","fileLastVersion":2,"stockAuditNum":"810","auditItemId":"13e4eadf443411ebb0c708f1ea8a847f","filename":"94633c4e1a35498fa1910665b2c57af4.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":656431,"StockType":1,"fileTitle":"民生证券股份有限公司关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的上市保荐书","auditStatus":1,"fileVersion":1,"fileType":37,"MarketType":1,"fileId":"161396","OPERATION_SEQ":"e86334eb393c8e30c7899e78da9f9769"},{"fileUpdateTime":"20201222170002","filePath":"\/information\/c\/202012\/e9f04755ec57457b9bb25d449c400101.pdf","publishDate":"2020-12-22","fileLastVersion":2,"stockAuditNum":"810","auditItemId":"13e4eadf443411ebb0c708f1ea8a847f","filename":"e9f04755ec57457b9bb25d449c400101.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":673602,"StockType":1,"fileTitle":"民生证券股份有限公司关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的发行保荐书","auditStatus":1,"fileVersion":1,"fileType":36,"MarketType":1,"fileId":"161394","OPERATION_SEQ":"e86334eb393c8e30c7899e78da9f9769"},{"fileUpdateTime":"20201222170002","filePath":"\/information\/c\/202012\/529b5b19d2dd4fa9bd3a26dd5bb710f7.pdf","publishDate":"2020-12-22","fileLastVersion":2,"stockAuditNum":"810","auditItemId":"13e4eadf443411ebb0c708f1ea8a847f","filename":"529b5b19d2dd4fa9bd3a26dd5bb710f7.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":5038891,"StockType":1,"fileTitle":"江苏宏微科技股份有限公司科创板首次公开发行股票招股说明书（申报稿）","auditStatus":1,"fileVersion":1,"fileType":30,"MarketType":1,"fileId":"161387","OPERATION_SEQ":"e86334eb393c8e30c7899e78da9f9769"}],"endDate":null,"endPage":null,"objectResult":null,"pageCount":1,"pageNo":1,"pageSize":32,"searchDate":null,"sort":null,"startDate":null,"total":32},"pageNo":null,"pageSize":null,"queryDate":"","result":[{"fileUpdateTime":"20210810173001","filePath":"\/information\/c\/202108\/599c224d1d56485ab2594cbb7880d1fb.pdf","publishDate":"2021-07-06","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"893f416ff9bd11eb9f2608f1ea8a847f","filename":"599c224d1d56485ab2594cbb7880d1fb.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":10172385,"StockType":1,"fileTitle":"江苏宏微科技股份有限公司科创板首次公开发行股票招股说明书（注册稿）","auditStatus":5,"fileVersion":4,"fileType":30,"MarketType":1,"fileId":"201168","OPERATION_SEQ":"c27f396abc045c2215d6889f543b109a"},{"fileUpdateTime":"20210810173001","filePath":"\/information\/c\/202108\/cf837f99004d446aa0fb2ad74eda44a1.pdf","publishDate":"2021-07-06","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"893f416ff9bd11eb9f2608f1ea8a847f","filename":"cf837f99004d446aa0fb2ad74eda44a1.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":954978,"StockType":1,"fileTitle":"民生证券股份有限公司关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的发行保荐书","auditStatus":5,"fileVersion":4,"fileType":36,"MarketType":1,"fileId":"201167","OPERATION_SEQ":"c27f396abc045c2215d6889f543b109a"},{"fileUpdateTime":"20210708170000","filePath":"\/information\/c\/202107\/ff98a241cddb451b942291055c3428e7.pdf","publishDate":"2021-07-06","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"a6b4d162c5571ca32a580ab2de8b1034","filename":"ff98a241cddb451b942291055c3428e7.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":383081,"StockType":1,"fileTitle":"关于同意江苏宏微科技股份有限公司首次公开发行股票注册的批复","auditStatus":5,"fileVersion":4,"fileType":35,"MarketType":1,"fileId":"197008a","OPERATION_SEQ":"b845d9aeac87eef43cd894d28daa8c19"},{"fileUpdateTime":"20210706170001","filePath":"\/information\/c\/202107\/72e4fcaa40c441068b5f2a13234d4fa0.pdf","publishDate":"2021-07-06","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"8bc41b27de3811eb9f2608f1ea8a847f","filename":"72e4fcaa40c441068b5f2a13234d4fa0.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":10368026,"StockType":1,"fileTitle":"江苏宏微科技股份有限公司科创板首次公开发行股票招股说明书（注册稿）","auditStatus":4,"fileVersion":3,"fileType":30,"MarketType":1,"fileId":"196724","OPERATION_SEQ":"6ee357caad0c12f7f6d354f223f1052c"},{"fileUpdateTime":"20210706170000","filePath":"\/information\/c\/202107\/788223f9815047c083d36a9e6eb1e31f.pdf","publishDate":"2021-07-06","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"f8dafdd4f0754b72a3bdae8fbfca78b9","filename":"788223f9815047c083d36a9e6eb1e31f.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":490968,"StockType":1,"fileTitle":"8-3 补充法律意见书（五）","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"82213708","OPERATION_SEQ":"b6e5c7a1257596dfe158631a24755b81"},{"fileUpdateTime":"20210706170000","filePath":"\/information\/c\/202107\/9cf6cdf4ebef42a9ad0d8bdc65001bd9.pdf","publishDate":"2021-07-06","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"cf14dff1bf9e43d8832469ed008ef597","filename":"9cf6cdf4ebef42a9ad0d8bdc65001bd9.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":1661881,"StockType":1,"fileTitle":"8-1 发行人及保荐机构关于发行注册环节反馈意见落实函的回复","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"82213707","OPERATION_SEQ":"b6e5c7a1257596dfe158631a24755b81"},{"fileUpdateTime":"20210706170000","filePath":"\/information\/c\/202107\/2ee8e7c97fcf4d8989f742ab2751388e.pdf","publishDate":"2021-07-06","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"7c705ffe18944d379273c162a31a2709","filename":"2ee8e7c97fcf4d8989f742ab2751388e.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":1002971,"StockType":1,"fileTitle":"8-2 会计师关于发行注册环节反馈意见落实函的回复","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"82213706","OPERATION_SEQ":"b6e5c7a1257596dfe158631a24755b81"},{"fileUpdateTime":"20210602193001","filePath":"\/information\/c\/202106\/f2e332223b0048c8a2131eb8350fd42d.pdf","publishDate":"2021-06-02","fileLastVersion":2,"stockAuditNum":"810","auditItemId":"de365d91c39511eb9f2608f1ea8a847f","filename":"f2e332223b0048c8a2131eb8350fd42d.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":6487234,"StockType":1,"fileTitle":"北京市环球律师事务所关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的法律意见书","auditStatus":4,"fileVersion":3,"fileType":33,"MarketType":1,"fileId":"186761","OPERATION_SEQ":"1d877dcb53963b5139caadee89164dd7"},{"fileUpdateTime":"20210602193001","filePath":"\/information\/c\/202106\/247a03c0dd7947a288f1cc7d3d5b3c5c.pdf","publishDate":"2021-06-02","fileLastVersion":2,"stockAuditNum":"810","auditItemId":"de365d91c39511eb9f2608f1ea8a847f","filename":"247a03c0dd7947a288f1cc7d3d5b3c5c.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":9016613,"StockType":1,"fileTitle":"天衡会计师事务所（特殊普通合伙）关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的财务报表及审计报告","auditStatus":4,"fileVersion":3,"fileType":32,"MarketType":1,"fileId":"186760","OPERATION_SEQ":"1d877dcb53963b5139caadee89164dd7"},{"fileUpdateTime":"20210602193001","filePath":"\/information\/c\/202106\/737af05aa1e74ec6b9f11570aef55e4a.pdf","publishDate":"2021-06-02","fileLastVersion":2,"stockAuditNum":"810","auditItemId":"de365d91c39511eb9f2608f1ea8a847f","filename":"737af05aa1e74ec6b9f11570aef55e4a.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":1119016,"StockType":1,"fileTitle":"民生证券股份有限公司关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的上市保荐书","auditStatus":4,"fileVersion":3,"fileType":37,"MarketType":1,"fileId":"186759","OPERATION_SEQ":"1d877dcb53963b5139caadee89164dd7"},{"fileUpdateTime":"20210602193001","filePath":"\/information\/c\/202106\/d436966c9cab4bb4b73761dacc381eed.pdf","publishDate":"2021-06-02","fileLastVersion":2,"stockAuditNum":"810","auditItemId":"de365d91c39511eb9f2608f1ea8a847f","filename":"d436966c9cab4bb4b73761dacc381eed.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":980222,"StockType":1,"fileTitle":"民生证券股份有限公司关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的发行保荐书","auditStatus":4,"fileVersion":3,"fileType":36,"MarketType":1,"fileId":"186758","OPERATION_SEQ":"1d877dcb53963b5139caadee89164dd7"},{"fileUpdateTime":"20210602193001","filePath":"\/information\/c\/202106\/65118a0294ec413cad229b644839c93d.pdf","publishDate":"2021-06-02","fileLastVersion":2,"stockAuditNum":"810","auditItemId":"de365d91c39511eb9f2608f1ea8a847f","filename":"65118a0294ec413cad229b644839c93d.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":10489719,"StockType":1,"fileTitle":"江苏宏微科技股份有限公司科创板首次公开发行股票招股说明书（注册稿）","auditStatus":4,"fileVersion":3,"fileType":30,"MarketType":1,"fileId":"186757","OPERATION_SEQ":"1d877dcb53963b5139caadee89164dd7"},{"fileUpdateTime":"20210525170002","filePath":"\/information\/c\/202105\/c96ebfbe2a7b4aa3b5f4e1ab86e7cd49.pdf","publishDate":"2021-05-25","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"7e30e1b0497c44f4961c4a39681a8b03","filename":"c96ebfbe2a7b4aa3b5f4e1ab86e7cd49.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":726295,"StockType":1,"fileTitle":"8-2 补充法律意见书（四）","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"81756169","OPERATION_SEQ":"5f835f570a4192324e601c45b5fa0f93"},{"fileUpdateTime":"20210525170002","filePath":"\/information\/c\/202105\/15f499bdaeec4f689b60a30180e8aa79.pdf","publishDate":"2021-05-25","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"1aefe06cab3e4816a2724e05e391e057","filename":"15f499bdaeec4f689b60a30180e8aa79.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":1096128,"StockType":1,"fileTitle":"8-1 发行人及保荐机构关于科创板上市委会议意见落实函的回复","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"81756168","OPERATION_SEQ":"5f835f570a4192324e601c45b5fa0f93"},{"fileUpdateTime":"20210511170002","filePath":"\/information\/c\/202105\/cd82936bed7e4f1c830fd68aad4c48ed.pdf","publishDate":"2021-05-11","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"bc9bab4839d54bb69ace30a3ed58ab73","filename":"cd82936bed7e4f1c830fd68aad4c48ed.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":1820723,"StockType":1,"fileTitle":"8-1 发行人及保荐机构关于审核中心意见落实函的回复","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"81566543","OPERATION_SEQ":"599b855f2b2e3bbdfce69e72f02c64f5"},{"fileUpdateTime":"20210511170002","filePath":"\/information\/c\/202105\/f1027d54a4f343588ae935e9adf53607.pdf","publishDate":"2021-05-11","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"d4bd48cabc254343abf0291edb625fb5","filename":"f1027d54a4f343588ae935e9adf53607.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":374621,"StockType":1,"fileTitle":"8-2 会计师关于审核中心意见落实函的回复意见","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"81566542","OPERATION_SEQ":"599b855f2b2e3bbdfce69e72f02c64f5"},{"fileUpdateTime":"20210511170002","filePath":"\/information\/c\/202105\/bb2ccbdaf64242fba3c63472874a90a3.pdf","publishDate":"2021-05-11","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"45661c91b23711eb9f2608f1ea8a847f","filename":"bb2ccbdaf64242fba3c63472874a90a3.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":1045163,"StockType":1,"fileTitle":"民生证券股份有限公司关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的发行保荐书","auditStatus":2,"fileVersion":2,"fileType":36,"MarketType":1,"fileId":"183301","OPERATION_SEQ":"599b855f2b2e3bbdfce69e72f02c64f5"},{"fileUpdateTime":"20210511170002","filePath":"\/information\/c\/202105\/15b94a71682d465b837f05dcc35c1610.pdf","publishDate":"2021-05-11","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"45661c91b23711eb9f2608f1ea8a847f","filename":"15b94a71682d465b837f05dcc35c1610.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":1187910,"StockType":1,"fileTitle":"民生证券股份有限公司关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的上市保荐书","auditStatus":2,"fileVersion":2,"fileType":37,"MarketType":1,"fileId":"183300","OPERATION_SEQ":"599b855f2b2e3bbdfce69e72f02c64f5"},{"fileUpdateTime":"20210511170002","filePath":"\/information\/c\/202105\/3d514061b4be4cae9f087e803e85e98c.pdf","publishDate":"2021-05-11","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"45661c91b23711eb9f2608f1ea8a847f","filename":"3d514061b4be4cae9f087e803e85e98c.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":9067755,"StockType":1,"fileTitle":"天衡会计师事务所（特殊普通合伙）关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的财务报表及审计报告","auditStatus":2,"fileVersion":2,"fileType":32,"MarketType":1,"fileId":"183297","OPERATION_SEQ":"599b855f2b2e3bbdfce69e72f02c64f5"},{"fileUpdateTime":"20210511170002","filePath":"\/information\/c\/202105\/59bea2dc0ceb4e7c8dc0e9c5764e7143.pdf","publishDate":"2021-05-11","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"45661c91b23711eb9f2608f1ea8a847f","filename":"59bea2dc0ceb4e7c8dc0e9c5764e7143.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":6469060,"StockType":1,"fileTitle":"北京市环球律师事务所关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的法律意见书","auditStatus":2,"fileVersion":2,"fileType":33,"MarketType":1,"fileId":"183296","OPERATION_SEQ":"599b855f2b2e3bbdfce69e72f02c64f5"},{"fileUpdateTime":"20210511170002","filePath":"\/information\/c\/202105\/22013426b5d54b52a9261b962b7e5b93.pdf","publishDate":"2021-05-11","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"45661c91b23711eb9f2608f1ea8a847f","filename":"22013426b5d54b52a9261b962b7e5b93.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":10516113,"StockType":1,"fileTitle":"江苏宏微科技股份有限公司科创板首次公开发行股票招股说明书（上会稿）","auditStatus":2,"fileVersion":2,"fileType":30,"MarketType":1,"fileId":"183295","OPERATION_SEQ":"599b855f2b2e3bbdfce69e72f02c64f5"},{"fileUpdateTime":"20210430170000","filePath":"\/information\/c\/202104\/dea5d43fade44cc2943be9cdbbdc607e.pdf","publishDate":"2021-04-30","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"7040c835260c4b18b271a5d1dae69e08","filename":"dea5d43fade44cc2943be9cdbbdc607e.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":5064951,"StockType":1,"fileTitle":"8-1 发行人及保荐机构关于第二轮审核问询函的回复","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"81422143","OPERATION_SEQ":"2607738008ef082fb48cf33d489c254e"},{"fileUpdateTime":"20210430170000","filePath":"\/information\/c\/202104\/2ac632ac4ed94e018cc55c8bad02664f.pdf","publishDate":"2021-04-30","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"3ee737f8a72c450ab96c80e927e31008","filename":"2ac632ac4ed94e018cc55c8bad02664f.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":2555406,"StockType":1,"fileTitle":"8-2 申报会计师关于第二轮审核问询函的回复","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"81422142","OPERATION_SEQ":"2607738008ef082fb48cf33d489c254e"},{"fileUpdateTime":"20210430170000","filePath":"\/information\/c\/202104\/db38364be9b5450fbdd101d664b502dc.pdf","publishDate":"2021-04-30","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"f061b17593eb4fdfbd77e0c8dfd99972","filename":"db38364be9b5450fbdd101d664b502dc.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":1841288,"StockType":1,"fileTitle":"8-3 补充法律意见书（二）","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"81422141","OPERATION_SEQ":"2607738008ef082fb48cf33d489c254e"},{"fileUpdateTime":"20210322170002","filePath":"\/information\/c\/202103\/5dbf352865d9464389e829ff4af2472a.pdf","publishDate":"2021-03-22","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"aa3ee305e01c4b1fa40e11ac14a1a59a","filename":"5dbf352865d9464389e829ff4af2472a.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":5693871,"StockType":1,"fileTitle":"8-1 关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市申请文件的审核问询函的回复","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"80910221","OPERATION_SEQ":"e499a9282b779b0bf08ad04e2a70a683"},{"fileUpdateTime":"20210322170002","filePath":"\/information\/c\/202103\/62808134a1644a96a8b699f96bf78625.pdf","publishDate":"2021-03-22","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"9a532b5c385c4439bdb29362935d794c","filename":"62808134a1644a96a8b699f96bf78625.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":5134566,"StockType":1,"fileTitle":"8-2 申报会计师关于审核问询函的回复","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"80910220","OPERATION_SEQ":"e499a9282b779b0bf08ad04e2a70a683"},{"fileUpdateTime":"20210322170002","filePath":"\/information\/c\/202103\/42e557e5e8e14714b287eb038623519f.pdf","publishDate":"2021-03-22","fileLastVersion":1,"stockAuditNum":"810","auditItemId":"fc9d7774c9c44cb793683f69a023ed51","filename":"42e557e5e8e14714b287eb038623519f.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":2265743,"StockType":1,"fileTitle":"8-3 补充法律意见书（一）","auditStatus":1,"fileVersion":1,"fileType":6,"MarketType":1,"fileId":"80910219","OPERATION_SEQ":"e499a9282b779b0bf08ad04e2a70a683"},{"fileUpdateTime":"20201222170002","filePath":"\/information\/c\/202012\/1b9b9bff9cff46969bda6645a66c7400.pdf","publishDate":"2020-12-22","fileLastVersion":2,"stockAuditNum":"810","auditItemId":"13e4eadf443411ebb0c708f1ea8a847f","filename":"1b9b9bff9cff46969bda6645a66c7400.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":988253,"StockType":1,"fileTitle":"北京市环球律师事务所关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的法律意见书","auditStatus":1,"fileVersion":1,"fileType":33,"MarketType":1,"fileId":"161406","OPERATION_SEQ":"e86334eb393c8e30c7899e78da9f9769"},{"fileUpdateTime":"20201222170002","filePath":"\/information\/c\/202012\/4066ca100a0a4d169fb37549704a7ff6.pdf","publishDate":"2020-12-22","fileLastVersion":2,"stockAuditNum":"810","auditItemId":"13e4eadf443411ebb0c708f1ea8a847f","filename":"4066ca100a0a4d169fb37549704a7ff6.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":8338127,"StockType":1,"fileTitle":"天衡会计师事务所（特殊普通合伙）关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的财务报表及审计报告","auditStatus":1,"fileVersion":1,"fileType":32,"MarketType":1,"fileId":"161402","OPERATION_SEQ":"e86334eb393c8e30c7899e78da9f9769"},{"fileUpdateTime":"20201222170002","filePath":"\/information\/c\/202012\/94633c4e1a35498fa1910665b2c57af4.pdf","publishDate":"2020-12-22","fileLastVersion":2,"stockAuditNum":"810","auditItemId":"13e4eadf443411ebb0c708f1ea8a847f","filename":"94633c4e1a35498fa1910665b2c57af4.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":656431,"StockType":1,"fileTitle":"民生证券股份有限公司关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的上市保荐书","auditStatus":1,"fileVersion":1,"fileType":37,"MarketType":1,"fileId":"161396","OPERATION_SEQ":"e86334eb393c8e30c7899e78da9f9769"},{"fileUpdateTime":"20201222170002","filePath":"\/information\/c\/202012\/e9f04755ec57457b9bb25d449c400101.pdf","publishDate":"2020-12-22","fileLastVersion":2,"stockAuditNum":"810","auditItemId":"13e4eadf443411ebb0c708f1ea8a847f","filename":"e9f04755ec57457b9bb25d449c400101.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":673602,"StockType":1,"fileTitle":"民生证券股份有限公司关于江苏宏微科技股份有限公司首次公开发行股票并在科创板上市的发行保荐书","auditStatus":1,"fileVersion":1,"fileType":36,"MarketType":1,"fileId":"161394","OPERATION_SEQ":"e86334eb393c8e30c7899e78da9f9769"},{"fileUpdateTime":"20201222170002","filePath":"\/information\/c\/202012\/529b5b19d2dd4fa9bd3a26dd5bb710f7.pdf","publishDate":"2020-12-22","fileLastVersion":2,"stockAuditNum":"810","auditItemId":"13e4eadf443411ebb0c708f1ea8a847f","filename":"529b5b19d2dd4fa9bd3a26dd5bb710f7.pdf","companyFullName":"江苏宏微科技股份有限公司","fileSize":5038891,"StockType":1,"fileTitle":"江苏宏微科技股份有限公司科创板首次公开发行股票招股说明书（申报稿）","auditStatus":1,"fileVersion":1,"fileType":30,"MarketType":1,"fileId":"161387","OPERATION_SEQ":"e86334eb393c8e30c7899e78da9f9769"}],"securityCode":"","texts":null,"type":"","validateCode":""})"#,
         );
         let disclosure = InfoDisclosure::try_from(raw_data);
         println!("{:#?}", disclosure);
@@ -831,13 +853,6 @@ mod tests {
         let mut client = ReqClient::new();
         let announce = query_company_announce(&mut client, 759).await.unwrap();
         println!("{:#?}", announce)
-    }
-
-    #[tokio::test]
-    async fn test_process_company() {
-        let mut client = ReqClient::new();
-        let sse = process_company(&mut client, "广东安达智能装备股份有限公司").await;
-        println!("{:#?}", sse);
     }
 
     #[tokio::test]
@@ -935,5 +950,13 @@ mod tests {
         // sleep(Duration::from_secs(20)).await;
         // println!("{:#?}", sse);
         println!("总耗时：{} ms", now.elapsed().as_millis());
+    }
+
+    #[tokio::test]
+    async fn test_process_company() {
+        let mut client = ReqClient::new();
+        // let sse = process_company(&mut client, "亚信安全科技股份有限公司").await;
+        let sse = process_company(&mut client, "江苏宏微科技股份有限公司").await;
+        println!("{:#?}", sse);
     }
 }
